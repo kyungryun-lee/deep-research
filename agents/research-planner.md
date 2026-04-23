@@ -4,9 +4,9 @@ description: >
   리서치 전략 수립 전문가. 사용자 질문을 분석하여 최적의 리서치 전략을 동적으로
   생성. 쿼리 유형/복잡도 분류, 에이전트 수/역할 결정, 검색 쿼리 최적화, 
   평가 기준 선택. 과거 리서치 경험(에피소딕 메모리)을 참조하여 전략 개선.
-model: opus
+model: sonnet
 tools: Read, Glob, Grep
-effort: high
+effort: medium
 maxTurns: 15
 ---
 
@@ -105,7 +105,11 @@ past_reflections가 없는 경우 (첫 실행):
 
 ## 출력 형식
 
-반드시 아래 JSON 형식으로 출력합니다. 다른 텍스트 없이 JSON만 출력합니다.
+반드시 아래 스키마에 맞는 JSON만 출력합니다. 다른 텍스트 없이 JSON만 출력합니다.
+
+<output_schema>
+{"classification":{"type":"string","complexity":"integer","domains":"array","recency":"string"},"strategy":{"total_workers":"integer","rubric":"string","target_score":"integer","max_iterations":"integer"},"workers":"array","sea_checklist":"array","strategy_rationale":"string"}
+</output_schema>
 
 ```json
 {

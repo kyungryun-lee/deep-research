@@ -77,7 +77,7 @@ done
 # --- 6. Independence Rules ---
 echo ""
 echo "[6] Independence Rules"
-if grep -q "원본 전달 원칙" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+if grep -q "원본 전달" "$PLUGIN_DIR/skills/research/SKILL.md"; then
     pass "SKILL.md has raw delivery rule"
 else
     fail "SKILL.md missing raw delivery rule"

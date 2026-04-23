@@ -5,7 +5,7 @@ description: >
   웹 검색, 문서 fetch를 수행하고 소스별 신뢰도를 태깅. 병렬 실행 최적화.
 model: sonnet
 tools: WebSearch, WebFetch, Read
-effort: low
+effort: medium
 maxTurns: 30
 ---
 

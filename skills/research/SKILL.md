@@ -20,7 +20,7 @@ arguments:
     description: "surface / standard / deep (기본: standard)"
     required: false
   - name: rubric
-    description: "평가 기준 (default/academic/practical/trend)"
+    description: "평가 기준 (default/poc/exploration)"
     required: false
   - name: output
     description: "보고서 저장 경로"
@@ -28,7 +28,7 @@ arguments:
   - name: mode
     description: "research-only / full-pipeline (기본: research-only)"
     required: false
-argument-hint: "리서치 주제" [--depth deep] [--rubric practical] [--mode full-pipeline]
+argument-hint: "리서치 주제" [--depth deep] [--rubric poc] [--mode full-pipeline]
 ---
 
 # Deep Research Orchestrator v2
@@ -51,11 +51,17 @@ argument-hint: "리서치 주제" [--depth deep] [--rubric practical] [--mode fu
 - Planner (sonnet/medium): 전략 수립은 Sonnet으로 충분 (SWE-bench 1.2pt 차이)
 - Worker (sonnet/medium): 정보 수집에 medium effort 필수 (low는 탐색 깊이 축소)
 - Evaluator (opus/high): 품질 판단에 최고 모델+충분한 thinking 필요
-- Synthesizer (opus/high): 종합 추론에 최고 모델 필요
+- Synthesizer (opus/medium): 종합 추론에 Opus 필요, effort medium (32K 출력 제한 대응)
 
-### AI vs 코드 분리 원칙
-- 결정론적 작업(URL 중복 제거, 포맷 변환, 메타데이터 추출)은 코드로 처리
-- 판단이 필요한 작업(전략 수립, 품질 평가, 종합 분석)만 AI로 처리
+### AI vs 코드 분리 원칙 (하네스 아키텍처)
+"모델이 판단, 하네스가 실행" — Claude Code 98.4%가 결정론적 코드 (arXiv 2604.14228)
+
+로컬 코드 (LLM 호출 0): 환경 셋업(SessionStart hook), 메모리 매칭(dr-memory), 플랜/결과 캐시(dr-cache + SubagentStop/PreCompact hook), 세션 기록(dr-memory save)
+AI 추론 (LLM 필수): 전략 수립, 검색 쿼리 생성, 정보 분석/판단, 품질 평가, 종합 서술
+
+### 평가 최적화
+- Differential 평가: 2회차+ 보완 시 FAIL된 차원만 재평가 (50%+ 토큰 절감)
+- Planner 재호출 생략: FAIL 시 supplement_queries를 직접 보완 Worker에 전달
 
 ## 보안 규칙
 
@@ -190,7 +196,13 @@ SEA 체크리스트: {sea_checklist}
 
 ### 판정 처리
 - **PASS** → Phase 5로
-- **FAIL** + iteration < max → 보완 worker 실행 후 Phase 4 재실행
+- **FAIL** + iteration < max:
+  1. evaluator의 `fail_dimensions`와 `supplement_queries`를 추출
+  2. **Planner 재호출 생략**: supplement_queries를 직접 보완 Worker에 전달
+     (전략 자체 오류 — 잘못된 도메인 분류 등 — 인 경우에만 Planner 재호출)
+  3. 보완 Worker 실행 후 결과를 all_findings에 append
+  4. **Differential 평가**: Phase 4 재실행 시 evaluator에 `fail_dimensions` 전달
+     → evaluator는 FAIL 차원만 재평가, PASS 차원은 이전 점수 유지
 - **FAIL** + iteration >= max → 현재 결과로 Phase 5 진행
 
 ---

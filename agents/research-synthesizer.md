@@ -5,7 +5,7 @@ description: >
   구조화된 보고서로 종합하고, 이번 리서치 경험을 에피소딕 메모리에 기록.
 model: opus
 tools: Read, Write, Glob, Bash
-effort: high
+effort: medium
 maxTurns: 25
 ---
 

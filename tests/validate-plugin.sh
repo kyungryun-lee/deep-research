@@ -24,11 +24,12 @@ echo "[1] Structure"
 for agent in research-planner research-worker research-evaluator research-synthesizer; do
     [ -f "$PLUGIN_DIR/agents/$agent.md" ] && pass "agents/$agent.md exists" || fail "agents/$agent.md missing"
 done
-for rubric in default academic practical trend; do
+for rubric in default poc exploration; do
     [ -f "$PLUGIN_DIR/skills/research/rubrics/$rubric.md" ] && pass "rubrics/$rubric.md exists" || fail "rubrics/$rubric.md missing"
 done
 [ -f "$PLUGIN_DIR/hooks/hooks.json" ] && pass "hooks.json exists" || fail "hooks.json missing"
 [ -x "$PLUGIN_DIR/bin/dr-memory" ] && pass "dr-memory is executable" || fail "dr-memory not executable"
+[ -x "$PLUGIN_DIR/bin/dr-cache" ] && pass "dr-cache is executable" || fail "dr-cache not executable"
 
 # --- 2. Configuration Tests ---
 echo ""
@@ -66,8 +67,8 @@ SYNTHESIZER_MODEL=$(grep "^model:" "$PLUGIN_DIR/agents/research-synthesizer.md" 
 # --- 5. Rubric JSON Blocks ---
 echo ""
 echo "[5] Rubric Weights"
-for rubric in default academic practical trend; do
-    if grep -q '"weights"' "$PLUGIN_DIR/skills/research/rubrics/$rubric.md"; then
+for rubric in default poc exploration; do
+    if grep -q '"core"' "$PLUGIN_DIR/skills/research/rubrics/$rubric.md"; then
         pass "$rubric.md has JSON weight block"
     else
         fail "$rubric.md missing JSON weight block"

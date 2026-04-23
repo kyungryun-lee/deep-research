@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Deep Research Cache CLI
+# Manages plan cache and worker result cache for token optimization
+
+CACHE_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/cache"
+PLAN_DIR="$CACHE_DIR/plans"
+WORKER_DIR="$CACHE_DIR/worker-results"
+
+usage() {
+    echo "Deep Research Cache CLI"
+    echo ""
+    echo "Usage: dr-cache <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  warmup          Load recent plan cache summary"
+    echo "  save-plan       Save current research plan (stdin JSON)"
+    echo "  load-plan KEY   Load cached plan by key"
+    echo "  save-result ID  Save worker result (stdin)"
+    echo "  load-result ID  Load cached worker result"
+    echo "  stats           Show cache statistics"
+    echo "  clean           Remove expired entries (default: 7 days)"
+    echo "  help            Show this help"
+}
+
+cache_key() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | head -c 100 | md5sum | cut -c1-12
+}
+
+cmd_warmup() {
+    mkdir -p "$PLAN_DIR" "$WORKER_DIR" 2>/dev/null
+    local count=$(find "$PLAN_DIR" -name "*.json" -mtime -7 2>/dev/null | wc -l)
+    if [ "$count" -gt 0 ]; then
+        echo "Plan cache: $count recent entries available"
+        find "$PLAN_DIR" -name "*.json" -mtime -7 -exec basename {} .json \; 2>/dev/null | head -5
+    else
+        echo "Plan cache: empty (first run)"
+    fi
+}
+
+cmd_save_plan() {
+    mkdir -p "$PLAN_DIR" 2>/dev/null
+    local query="${1:-unnamed}"
+    local key=$(cache_key "$query")
+    cat > "$PLAN_DIR/${key}.json"
+    echo "Plan saved: $key"
+}
+
+cmd_load_plan() {
+    local key="$1"
+    if [ -f "$PLAN_DIR/${key}.json" ]; then
+        cat "$PLAN_DIR/${key}.json"
+    else
+        echo '{"hit":false}'
+    fi
+}
+
+cmd_save_result() {
+    mkdir -p "$WORKER_DIR" 2>/dev/null
+    local id="${1:-unknown}"
+    cat > "$WORKER_DIR/${id}.txt"
+    echo "Result saved: $id"
+}
+
+cmd_load_result() {
+    local id="$1"
+    if [ -f "$WORKER_DIR/${id}.txt" ]; then
+        cat "$WORKER_DIR/${id}.txt"
+    else
+        echo "MISS"
+        return 1
+    fi
+}
+
+cmd_stats() {
+    echo "Deep Research Cache Statistics"
+    echo "==============================="
+    local plan_count=$(find "$PLAN_DIR" -name "*.json" 2>/dev/null | wc -l)
+    local result_count=$(find "$WORKER_DIR" -name "*.txt" 2>/dev/null | wc -l)
+    local total_size=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1)
+    echo "Plan cache:   $plan_count entries"
+    echo "Worker cache: $result_count entries"
+    echo "Total size:   ${total_size:-0}"
+    echo ""
+    if [ "$plan_count" -gt 0 ]; then
+        echo "Recent plans:"
+        find "$PLAN_DIR" -name "*.json" -mtime -7 -printf "  %T+ %f\n" 2>/dev/null | sort -r | head -5
+    fi
+}
+
+cmd_clean() {
+    local days="${1:-7}"
+    local before_plan=$(find "$PLAN_DIR" -name "*.json" 2>/dev/null | wc -l)
+    local before_result=$(find "$WORKER_DIR" -name "*.txt" 2>/dev/null | wc -l)
+    find "$PLAN_DIR" -name "*.json" -mtime +"$days" -delete 2>/dev/null
+    find "$WORKER_DIR" -name "*.txt" -mtime +"$days" -delete 2>/dev/null
+    local after_plan=$(find "$PLAN_DIR" -name "*.json" 2>/dev/null | wc -l)
+    local after_result=$(find "$WORKER_DIR" -name "*.txt" 2>/dev/null | wc -l)
+    echo "Cleaned: plans $((before_plan - after_plan)), results $((before_result - after_result)) (older than ${days} days)"
+}
+
+case "${1:-help}" in
+    warmup)      cmd_warmup ;;
+    save-plan)   cmd_save_plan "$2" ;;
+    load-plan)   cmd_load_plan "$2" ;;
+    save-result) cmd_save_result "$2" ;;
+    load-result) cmd_load_result "$2" ;;
+    stats)       cmd_stats ;;
+    clean)       cmd_clean "$2" ;;
+    help)        usage ;;
+    *)           usage ;;
+esac

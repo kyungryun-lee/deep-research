@@ -3,7 +3,22 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "mkdir -p \"${CLAUDE_PLUGIN_DATA}/memory\" 2>/dev/null; echo '{\"additionalContext\": \"Deep Research plugin loaded. Memory: '\"${CLAUDE_PLUGIN_DATA}\"'/memory/\"}'"
+        "command": "mkdir -p \"${CLAUDE_PLUGIN_DATA}/memory\" \"${CLAUDE_PLUGIN_DATA}/cache\" \"${CLAUDE_PLUGIN_DATA}/cache/worker-results\" 2>/dev/null; echo '{\"additionalContext\": \"Deep Research v2 loaded. Cache: '\"${CLAUDE_PLUGIN_DATA}\"'/cache/\"}'",
+        "timeout": 10
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "command": "echo '{\"additionalContext\": \"[DR] Compaction: research plan and evaluation state are cached at '\"${CLAUDE_PLUGIN_DATA}\"'/cache/. Use dr-cache restore after compaction.\"}'",
+        "timeout": 5
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "command": "echo '{\"suppressOutput\": true}'",
+        "timeout": 5
       }
     ]
   }

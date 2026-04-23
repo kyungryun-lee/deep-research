@@ -1,0 +1,23 @@
+# Plugin runtime data (user-specific, not shared)
+memory/
+sessions.jsonl
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Node.js (if dependencies added later)
+node_modules/
+package-lock.json
+
+# Python (if dependencies added later)
+__pycache__/
+*.pyc
+.venv/

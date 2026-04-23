@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "mkdir -p \"${CLAUDE_PLUGIN_DATA}/memory\" 2>/dev/null; echo '{\"additionalContext\": \"Deep Research plugin loaded. Memory: '\"${CLAUDE_PLUGIN_DATA}\"'/memory/\"}'"
+      }
+    ]
+  }
+}

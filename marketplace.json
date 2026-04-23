@@ -1,0 +1,19 @@
+{
+  "name": "deep-research-marketplace",
+  "owner": {
+    "name": "deep-research contributors"
+  },
+  "metadata": {
+    "description": "Adaptive deep research plugin with Generator-Verifier loop and self-improvement",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "deep-research",
+      "source": ".",
+      "description": "Adaptive deep research with Generator-Verifier loop. Dynamically plans per query, evaluates independently, learns from every run.",
+      "version": "1.0.0",
+      "category": "research"
+    }
+  ]
+}

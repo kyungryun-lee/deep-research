@@ -1,0 +1,39 @@
+{
+  "name": "deep-research",
+  "version": "1.0.0",
+  "description": "Adaptive deep research with Generator-Verifier loop and self-improvement. Dynamically plans research strategy per query, evaluates quality independently, and learns from every execution.",
+  "author": {
+    "name": "deep-research contributors"
+  },
+  "repository": "https://github.com/anthropics/deep-research",
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "deep-research",
+    "adaptive",
+    "generator-verifier",
+    "self-improving"
+  ],
+  "userConfig": {
+    "default_depth": {
+      "type": "string",
+      "title": "Default research depth",
+      "description": "surface / standard / deep (default: standard)"
+    },
+    "max_iterations": {
+      "type": "string",
+      "title": "Max evaluate-improve iterations",
+      "description": "Maximum number of Generator-Verifier loops (1-5, default: 3)"
+    },
+    "output_dir": {
+      "type": "string",
+      "title": "Report output directory",
+      "description": "Where to save research reports (default: current directory)"
+    },
+    "default_rubric": {
+      "type": "string",
+      "title": "Default evaluation rubric",
+      "description": "default / academic / practical / trend (default: default)"
+    }
+  }
+}

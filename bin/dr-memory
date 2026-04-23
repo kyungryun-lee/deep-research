@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Deep Research Memory CLI
+# Manages research session history and learning data
+
+MEMORY_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/memory"
+SESSIONS_FILE="$MEMORY_DIR/sessions.jsonl"
+
+usage() {
+    echo "Deep Research Memory CLI"
+    echo ""
+    echo "Usage: dr-memory <command>"
+    echo ""
+    echo "Commands:"
+    echo "  stats     Show cumulative statistics"
+    echo "  list      List recent research sessions"
+    echo "  show N    Show details of session N (1=most recent)"
+    echo "  clear     Clear all session history (with confirmation)"
+    echo "  help      Show this help"
+}
+
+check_file() {
+    if [ ! -f "$SESSIONS_FILE" ]; then
+        echo "No research sessions found."
+        echo "Run /deep-research:research to create your first session."
+        exit 0
+    fi
+}
+
+cmd_stats() {
+    check_file
+    local total=$(wc -l < "$SESSIONS_FILE")
+    local avg_score=$(python3 -c "
+import json, sys
+scores = []
+for line in open('$SESSIONS_FILE'):
+    try:
+        d = json.loads(line.strip())
+        if 'score' in d: scores.append(d['score'])
+    except: pass
+if scores:
+    print(f'{sum(scores)/len(scores):.1f}')
+else:
+    print('N/A')
+" 2>/dev/null || echo "N/A")
+    local avg_iter=$(python3 -c "
+import json
+iters = []
+for line in open('$SESSIONS_FILE'):
+    try:
+        d = json.loads(line.strip())
+        if 'iterations' in d: iters.append(d['iterations'])
+    except: pass
+if iters:
+    print(f'{sum(iters)/len(iters):.1f}')
+else:
+    print('N/A')
+" 2>/dev/null || echo "N/A")
+
+    echo "Deep Research Statistics"
+    echo "========================"
+    echo "Total sessions:    $total"
+    echo "Average score:     $avg_score / 100"
+    echo "Average iterations: $avg_iter"
+}
+
+cmd_list() {
+    check_file
+    echo "Recent Research Sessions"
+    echo "========================"
+    python3 -c "
+import json
+sessions = []
+for line in open('$SESSIONS_FILE'):
+    try:
+        sessions.append(json.loads(line.strip()))
+    except: pass
+for i, s in enumerate(reversed(sessions[-10:]), 1):
+    q = s.get('query','?')[:60]
+    score = s.get('score','?')
+    ts = s.get('timestamp','?')[:10]
+    print(f'  {i}. [{ts}] {score}pts | {q}')
+" 2>/dev/null
+}
+
+cmd_show() {
+    check_file
+    local n=${1:-1}
+    python3 -c "
+import json
+sessions = []
+for line in open('$SESSIONS_FILE'):
+    try:
+        sessions.append(json.loads(line.strip()))
+    except: pass
+idx = len(sessions) - int('$n')
+if 0 <= idx < len(sessions):
+    s = sessions[idx]
+    print(json.dumps(s, indent=2, ensure_ascii=False))
+else:
+    print('Session not found.')
+" 2>/dev/null
+}
+
+cmd_clear() {
+    read -p "Clear all research session history? (y/N): " confirm
+    if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+        rm -f "$SESSIONS_FILE"
+        echo "Session history cleared."
+    else
+        echo "Cancelled."
+    fi
+}
+
+case "${1:-help}" in
+    stats) cmd_stats ;;
+    list)  cmd_list ;;
+    show)  cmd_show "$2" ;;
+    clear) cmd_clear ;;
+    help)  usage ;;
+    *)     usage ;;
+esac

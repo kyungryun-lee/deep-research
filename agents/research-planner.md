@@ -80,7 +80,15 @@ maxTurns: 15
 4순위: 산업 보고서
 ```
 
-## Step 5: 과거 메모리 + 플랜 캐시 참조
+## Step 5: Knowledge + 과거 메모리 + 플랜 캐시 참조
+
+### Knowledge (Core Facts + Anchors)
+- 기존 core_facts가 제공되면 **보호 대상**으로 취급
+  - Worker에게 앵커 소스 재확인 지시
+  - 추가 탐색은 앵커 외 영역에 집중하도록 쿼리 설계
+  - core facts와 모순 발견 시 반증 수집용 Worker 배정
+- anchor_sources가 있으면 Worker의 `queries`에 앵커 URL 재방문을 포함
+- core facts가 이미 커버하는 영역은 Worker 배정에서 비중 축소
 
 ### 메모리 (sessions.jsonl)
 - 유사 세션의 `reflection` 필드를 few-shot으로 활용
@@ -98,7 +106,10 @@ maxTurns: 15
 ## 출력 형식
 
 <output_schema>
-{"classification":{"type":"string","complexity":"integer","domains":"array","recency":"string"},"profile":"string","strategy":{"total_workers":"integer","rubric":"string","target_score":"integer","max_iterations":"integer"},"workers":"array","sea_checklist":"array","source_strategy":"string","strategy_rationale":"string"}
+{"classification":{"type":"string","complexity":"integer","domains":"array","recency":"string"},"profile":"string","strategy":{"total_workers":"integer","rubric":"string","target_score":"integer","max_iterations":"integer"},"workers":"array","sea_checklist":"array","source_strategy":"string","strategy_rationale":"string","anchor_strategy":"string"}
 </output_schema>
+
+새 필드:
+- `anchor_strategy`: "reuse" (앵커 소스 활용) | "fresh" (첫 리서치) | "expand" (앵커 기반 확장)
 
 JSON만 출력합니다. 다른 텍스트 없이 JSON만 출력합니다.

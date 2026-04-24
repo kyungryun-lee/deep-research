@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Deep Research Dedup CLI
+# Removes duplicate sources from worker findings
+# Input: Worker findings text (stdin) or JSON array of sources
+# Output: Deduplicated results + duplicate report
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Deep Research Dedup CLI
+
+Usage: dr-dedup [command]
+
+Commands:
+  urls     Deduplicate URL list (stdin: JSON array of URLs)
+  text     Deduplicate sources in worker findings text (stdin: findings text)
+  help     Show this help
+
+Examples:
+  echo '["https://arxiv.org/abs/2401.00001","https://www.arxiv.org/abs/2401.00001"]' | dr-dedup urls
+  cat findings.txt | dr-dedup text
+EOF
+}
+
+cmd_urls() {
+    local input
+    input=$(cat)
+
+    python3 << PYEOF
+import json, re
+from urllib.parse import urlparse, urlunparse
+
+urls = json.loads('''$input''')
+
+def normalize_url(url):
+    """Normalize URL for dedup comparison"""
+    parsed = urlparse(url)
+    # Remove www prefix
+    host = parsed.hostname or ''
+    host = re.sub(r'^www\.', '', host)
+    # Remove trailing slash
+    path = parsed.path.rstrip('/')
+    # Remove fragment
+    # Normalize scheme to https
+    return f"https://{host}{path}"
+
+seen = {}
+unique = []
+duplicates = []
+
+for url in urls:
+    norm = normalize_url(url)
+    if norm in seen:
+        duplicates.append({"url": url, "duplicate_of": seen[norm]})
+    else:
+        seen[norm] = url
+        unique.append(url)
+
+print(json.dumps({
+    "unique": unique,
+    "duplicates": duplicates,
+    "stats": {
+        "input": len(urls),
+        "unique": len(unique),
+        "removed": len(duplicates)
+    }
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_text() {
+    local input
+    input=$(cat)
+
+    python3 << 'PYEOF'
+import re, sys, json
+from urllib.parse import urlparse
+
+text = sys.stdin.read() if not sys.stdin.isatty() else ""
+if not text:
+    text = r"""TEXTPLACEHOLDER"""
+
+# Extract all URLs from text
+url_pattern = r'https?://[^\s\)\]>\"\'`]+'
+urls = re.findall(url_pattern, text)
+
+def normalize_url(url):
+    url = url.rstrip('.,;:)')
+    parsed = urlparse(url)
+    host = (parsed.hostname or '').lstrip('www.')
+    path = parsed.path.rstrip('/')
+    return f"https://{host}{path}"
+
+seen = {}
+duplicates = []
+for url in urls:
+    norm = normalize_url(url)
+    if norm in seen:
+        duplicates.append({"url": url, "first_seen": seen[norm]})
+    else:
+        seen[norm] = url
+
+# Report
+if duplicates:
+    print(json.dumps({
+        "has_duplicates": True,
+        "total_urls": len(urls),
+        "unique_urls": len(seen),
+        "duplicates": duplicates,
+        "warning": f"{len(duplicates)} duplicate URL(s) found in findings"
+    }, ensure_ascii=False, indent=2))
+else:
+    print(json.dumps({
+        "has_duplicates": False,
+        "total_urls": len(urls),
+        "unique_urls": len(seen),
+        "duplicates": []
+    }, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+case "${1:-help}" in
+    urls)  cmd_urls ;;
+    text)  cmd_text ;;
+    help)  usage ;;
+    *)     usage ;;
+esac

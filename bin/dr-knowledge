@@ -1,0 +1,574 @@
+#!/usr/bin/env bash
+# Deep Research Knowledge CLI
+# Manages Core-Peripheral dual-layer knowledge for research consistency
+# Core facts: verified, cross-checked, stable across sessions
+# Peripheral facts: flexible, updated each session
+# Anchor sources: fixed primary sources per topic
+
+set -euo pipefail
+
+KNOWLEDGE_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/knowledge"
+
+usage() {
+    cat <<'EOF'
+Deep Research Knowledge CLI
+
+Usage: dr-knowledge <command> [args]
+
+Commands:
+  save --topic "topic"      Save knowledge from stdin JSON (core/peripheral/anchors)
+  load --topic "topic"      Load existing knowledge for a topic
+  match --query "query"     Find similar topics in knowledge base
+  anchors --topic "topic"   Get anchor sources for a topic
+  conflicts --topic "topic" Check core vs new facts conflicts (stdin: new facts JSON)
+  update-core --topic "t"   Promote peripheral facts to core (stdin: fact IDs JSON)
+  stats                     Show knowledge base statistics
+  topics                    List all known topics
+  help                      Show this help
+
+Examples:
+  echo '{"core_facts":[...],"peripheral":[...],"anchors":[...]}' | dr-knowledge save --topic "agentic research"
+  dr-knowledge load --topic "agentic research"
+  dr-knowledge match --query "multi-agent deep research systems"
+EOF
+}
+
+topic_hash() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//' | md5sum | cut -c1-12
+}
+
+ensure_dir() {
+    local hash
+    hash=$(topic_hash "$1")
+    mkdir -p "$KNOWLEDGE_DIR/$hash" 2>/dev/null
+    echo "$KNOWLEDGE_DIR/$hash"
+}
+
+cmd_save() {
+    local topic=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --topic) topic="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "$topic" ]] && { echo '{"error":"--topic required"}'; return 1; }
+
+    local dir
+    dir=$(ensure_dir "$topic")
+    local hash
+    hash=$(topic_hash "$topic")
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" "$dir" "$topic" "$hash" << 'PYEOF'
+import json, sys, os
+from datetime import datetime
+
+tmpfile, dir_path, topic, topic_hash = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+with open(tmpfile) as f:
+    data = json.loads(f.read())
+
+now = datetime.now().strftime("%Y-%m-%d")
+
+# --- Meta ---
+meta_path = os.path.join(dir_path, "meta.json")
+if os.path.exists(meta_path):
+    with open(meta_path) as f:
+        meta = json.loads(f.read())
+    meta["updated_at"] = now
+    meta["research_count"] = meta.get("research_count", 0) + 1
+else:
+    meta = {
+        "topic": topic,
+        "topic_hash": topic_hash,
+        "created_at": now,
+        "updated_at": now,
+        "research_count": 1
+    }
+with open(meta_path, "w") as f:
+    json.dump(meta, f, ensure_ascii=False, indent=2)
+
+# --- Core facts (merge, don't overwrite) ---
+core_path = os.path.join(dir_path, "core-facts.json")
+existing_core = {"topic": topic, "topic_hash": topic_hash, "facts": [], "version": 1}
+if os.path.exists(core_path):
+    with open(core_path) as f:
+        existing_core = json.loads(f.read())
+
+new_core = data.get("core_facts", [])
+existing_ids = {f["id"] for f in existing_core["facts"]}
+added_core = 0
+updated_core = 0
+
+for fact in new_core:
+    if fact.get("id") in existing_ids:
+        # Update existing: only if new evidence provided
+        for i, ef in enumerate(existing_core["facts"]):
+            if ef["id"] == fact["id"]:
+                # Merge evidence lists
+                existing_urls = {e.get("url") for e in ef.get("evidence", [])}
+                for ev in fact.get("evidence", []):
+                    if ev.get("url") not in existing_urls:
+                        ef.setdefault("evidence", []).append(ev)
+                        ef["verification_count"] = ef.get("verification_count", 1) + 1
+                ef["cross_verified"] = ef.get("verification_count", 1) >= 2
+                ef["updated_at"] = now
+                existing_core["facts"][i] = ef
+                updated_core += 1
+                break
+    else:
+        # New fact
+        fact.setdefault("created_at", now)
+        fact.setdefault("updated_at", now)
+        fact.setdefault("verification_count", len(fact.get("evidence", [])))
+        fact["cross_verified"] = fact.get("verification_count", 1) >= 2
+        existing_core["facts"].append(fact)
+        added_core += 1
+
+existing_core["version"] = existing_core.get("version", 0) + 1
+with open(core_path, "w") as f:
+    json.dump(existing_core, f, ensure_ascii=False, indent=2)
+
+# --- Peripheral facts (replace each session) ---
+peripheral_path = os.path.join(dir_path, "peripheral.json")
+peripheral = data.get("peripheral", [])
+peripheral_data = {
+    "topic": topic,
+    "facts": peripheral,
+    "updated_at": now
+}
+with open(peripheral_path, "w") as f:
+    json.dump(peripheral_data, f, ensure_ascii=False, indent=2)
+
+# --- Anchor sources (merge) ---
+anchor_path = os.path.join(dir_path, "anchor-sources.json")
+existing_anchors = {"topic_hash": topic_hash, "anchors": [], "max_new_sources": 10}
+if os.path.exists(anchor_path):
+    with open(anchor_path) as f:
+        existing_anchors = json.loads(f.read())
+
+new_anchors = data.get("anchors", [])
+existing_urls = {a.get("url") for a in existing_anchors["anchors"]}
+added_anchors = 0
+for anchor in new_anchors:
+    if anchor.get("url") not in existing_urls:
+        anchor.setdefault("last_verified", now)
+        existing_anchors["anchors"].append(anchor)
+        added_anchors += 1
+
+with open(anchor_path, "w") as f:
+    json.dump(existing_anchors, f, ensure_ascii=False, indent=2)
+
+# --- Claim-Evidence mapping ---
+claims = data.get("claims", [])
+if claims:
+    ce_path = os.path.join(dir_path, "claim-evidence.json")
+    ce_data = {
+        "topic": topic,
+        "claims": claims,
+        "unverified_claims": data.get("unverified_claims", []),
+        "updated_at": now
+    }
+    with open(ce_path, "w") as f:
+        json.dump(ce_data, f, ensure_ascii=False, indent=2)
+
+print(json.dumps({
+    "status": "saved",
+    "topic": topic,
+    "hash": topic_hash,
+    "path": dir_path,
+    "core": {"total": len(existing_core["facts"]), "added": added_core, "updated": updated_core},
+    "peripheral": {"total": len(peripheral)},
+    "anchors": {"total": len(existing_anchors["anchors"]), "added": added_anchors},
+    "claims": {"total": len(claims)}
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_load() {
+    local topic=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --topic) topic="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "$topic" ]] && { echo '{"error":"--topic required"}'; return 1; }
+
+    local hash
+    hash=$(topic_hash "$topic")
+    local dir="$KNOWLEDGE_DIR/$hash"
+
+    if [ ! -d "$dir" ]; then
+        echo '{"found":false,"topic":"'"$topic"'","hash":"'"$hash"'"}'
+        return 0
+    fi
+
+    python3 - "$dir" "$topic" "$hash" << 'PYEOF'
+import json, sys, os
+
+dir_path, topic, topic_hash = sys.argv[1], sys.argv[2], sys.argv[3]
+
+result = {"found": True, "topic": topic, "hash": topic_hash}
+
+for name, key in [("meta.json","meta"), ("core-facts.json","core_facts"),
+                   ("peripheral.json","peripheral"), ("anchor-sources.json","anchors"),
+                   ("claim-evidence.json","claim_evidence")]:
+    path = os.path.join(dir_path, name)
+    if os.path.exists(path):
+        with open(path) as f:
+            result[key] = json.loads(f.read())
+
+# Summary
+core = result.get("core_facts", {})
+result["summary"] = {
+    "core_facts_count": len(core.get("facts", [])),
+    "cross_verified_count": sum(1 for f in core.get("facts", []) if f.get("cross_verified")),
+    "peripheral_count": len(result.get("peripheral", {}).get("facts", [])),
+    "anchor_count": len(result.get("anchors", {}).get("anchors", [])),
+    "claim_count": len(result.get("claim_evidence", {}).get("claims", []))
+}
+
+print(json.dumps(result, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_match() {
+    local query=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --query) query="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "$query" ]] && { echo '{"error":"--query required"}'; return 1; }
+
+    python3 - "$KNOWLEDGE_DIR" "$query" << 'PYEOF'
+import json, sys, os, re, math
+from collections import Counter
+
+knowledge_dir, query = sys.argv[1], sys.argv[2]
+
+def tokenize(text):
+    return re.findall(r'[a-z0-9가-힣]+', text.lower())
+
+def tf_idf_similarity(tokens_a, tokens_b):
+    """Simple TF-based cosine similarity (no IDF needed for small collections)"""
+    if not tokens_a or not tokens_b:
+        return 0.0
+    counter_a = Counter(tokens_a)
+    counter_b = Counter(tokens_b)
+    all_terms = set(counter_a) | set(counter_b)
+    dot = sum(counter_a.get(t, 0) * counter_b.get(t, 0) for t in all_terms)
+    mag_a = math.sqrt(sum(v**2 for v in counter_a.values()))
+    mag_b = math.sqrt(sum(v**2 for v in counter_b.values()))
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+query_tokens = tokenize(query)
+matches = []
+
+if not os.path.exists(knowledge_dir):
+    print(json.dumps({"matches": [], "query": query}))
+    sys.exit(0)
+
+for entry in os.listdir(knowledge_dir):
+    meta_path = os.path.join(knowledge_dir, entry, "meta.json")
+    if not os.path.exists(meta_path):
+        continue
+    with open(meta_path) as f:
+        meta = json.loads(f.read())
+
+    topic = meta.get("topic", "")
+    topic_tokens = tokenize(topic)
+
+    # Also check core facts for keyword matching
+    core_path = os.path.join(knowledge_dir, entry, "core-facts.json")
+    if os.path.exists(core_path):
+        with open(core_path) as f:
+            core = json.loads(f.read())
+        for fact in core.get("facts", []):
+            topic_tokens.extend(tokenize(fact.get("claim", "")))
+
+    similarity = tf_idf_similarity(query_tokens, topic_tokens)
+
+    if similarity > 0.1:
+        matches.append({
+            "topic": topic,
+            "hash": entry,
+            "similarity": round(similarity, 3),
+            "research_count": meta.get("research_count", 0),
+            "last_updated": meta.get("updated_at", "unknown")
+        })
+
+matches.sort(key=lambda x: x["similarity"], reverse=True)
+
+print(json.dumps({
+    "query": query,
+    "matches": matches[:5],
+    "total_topics": len(os.listdir(knowledge_dir))
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_anchors() {
+    local topic=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --topic) topic="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "$topic" ]] && { echo '{"error":"--topic required"}'; return 1; }
+
+    local hash
+    hash=$(topic_hash "$topic")
+    local path="$KNOWLEDGE_DIR/$hash/anchor-sources.json"
+
+    if [ -f "$path" ]; then
+        cat "$path"
+    else
+        echo '{"anchors":[],"topic":"'"$topic"'"}'
+    fi
+}
+
+cmd_conflicts() {
+    local topic=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --topic) topic="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "$topic" ]] && { echo '{"error":"--topic required"}'; return 1; }
+
+    local hash
+    hash=$(topic_hash "$topic")
+    local core_path="$KNOWLEDGE_DIR/$hash/core-facts.json"
+
+    if [ ! -f "$core_path" ]; then
+        echo '{"conflicts":[],"note":"no existing core facts"}'
+        return 0
+    fi
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$core_path" "$tmpfile" << 'PYEOF'
+import json, sys, re
+
+with open(sys.argv[1]) as f:
+    core = json.loads(f.read())
+with open(sys.argv[2]) as f:
+    new_facts = json.loads(f.read())
+
+def normalize(text):
+    return re.sub(r'\s+', ' ', text.lower().strip())
+
+conflicts = []
+for new_fact in new_facts:
+    new_claim = normalize(new_fact.get("claim", ""))
+    for core_fact in core.get("facts", []):
+        core_claim = normalize(core_fact.get("claim", ""))
+        # Simple keyword overlap check for potential conflicts
+        new_words = set(new_claim.split())
+        core_words = set(core_claim.split())
+        overlap = new_words & core_words
+        if len(overlap) >= 3:  # Significant overlap = potential conflict area
+            # Check if claims contradict (simple heuristic: negation words)
+            negations = {"not", "no", "never", "없", "아닌", "불가", "못"}
+            new_has_neg = bool(new_words & negations)
+            core_has_neg = bool(core_words & negations)
+            if new_has_neg != core_has_neg:
+                conflicts.append({
+                    "type": "potential_contradiction",
+                    "core_fact_id": core_fact.get("id"),
+                    "core_claim": core_fact.get("claim"),
+                    "new_claim": new_fact.get("claim"),
+                    "overlap_keywords": list(overlap)[:10],
+                    "action": "REVIEW_REQUIRED"
+                })
+            elif new_claim != core_claim and len(overlap) > len(new_words) * 0.5:
+                conflicts.append({
+                    "type": "potential_update",
+                    "core_fact_id": core_fact.get("id"),
+                    "core_claim": core_fact.get("claim"),
+                    "new_claim": new_fact.get("claim"),
+                    "overlap_keywords": list(overlap)[:10],
+                    "action": "MERGE_OR_UPDATE"
+                })
+
+print(json.dumps({
+    "conflicts": conflicts,
+    "total_checked": len(new_facts),
+    "conflicts_found": len(conflicts)
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_update_core() {
+    local topic=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --topic) topic="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "$topic" ]] && { echo '{"error":"--topic required"}'; return 1; }
+
+    local hash
+    hash=$(topic_hash "$topic")
+    local dir="$KNOWLEDGE_DIR/$hash"
+    local core_path="$dir/core-facts.json"
+    local peri_path="$dir/peripheral.json"
+
+    if [ ! -f "$peri_path" ]; then
+        echo '{"error":"no peripheral facts found"}'
+        return 1
+    fi
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$core_path" "$peri_path" "$tmpfile" << 'PYEOF'
+import json, sys, os
+from datetime import datetime
+
+core_path, peri_path, ids_file = sys.argv[1], sys.argv[2], sys.argv[3]
+now = datetime.now().strftime("%Y-%m-%d")
+
+with open(ids_file) as f:
+    promote_ids = set(json.loads(f.read()))
+
+core = {"facts": [], "version": 1}
+if os.path.exists(core_path):
+    with open(core_path) as f:
+        core = json.loads(f.read())
+
+with open(peri_path) as f:
+    peripheral = json.loads(f.read())
+
+promoted = 0
+remaining = []
+for fact in peripheral.get("facts", []):
+    if fact.get("id") in promote_ids:
+        fact["promoted_at"] = now
+        fact["cross_verified"] = True
+        core["facts"].append(fact)
+        promoted += 1
+    else:
+        remaining.append(fact)
+
+core["version"] = core.get("version", 0) + 1
+with open(core_path, "w") as f:
+    json.dump(core, f, ensure_ascii=False, indent=2)
+
+peripheral["facts"] = remaining
+with open(peri_path, "w") as f:
+    json.dump(peripheral, f, ensure_ascii=False, indent=2)
+
+print(json.dumps({
+    "promoted": promoted,
+    "core_total": len(core["facts"]),
+    "peripheral_remaining": len(remaining)
+}))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_stats() {
+    python3 - "$KNOWLEDGE_DIR" << 'PYEOF'
+import json, sys, os
+
+kdir = sys.argv[1]
+if not os.path.exists(kdir):
+    print(json.dumps({"total_topics": 0, "message": "Knowledge base empty"}))
+    sys.exit(0)
+
+topics = []
+total_core = 0
+total_peripheral = 0
+total_anchors = 0
+total_claims = 0
+
+for entry in sorted(os.listdir(kdir)):
+    meta_path = os.path.join(kdir, entry, "meta.json")
+    if not os.path.exists(meta_path):
+        continue
+    with open(meta_path) as f:
+        meta = json.loads(f.read())
+
+    core_count = 0
+    core_path = os.path.join(kdir, entry, "core-facts.json")
+    if os.path.exists(core_path):
+        with open(core_path) as f:
+            core_count = len(json.loads(f.read()).get("facts", []))
+
+    peri_count = 0
+    peri_path = os.path.join(kdir, entry, "peripheral.json")
+    if os.path.exists(peri_path):
+        with open(peri_path) as f:
+            peri_count = len(json.loads(f.read()).get("facts", []))
+
+    anchor_count = 0
+    anchor_path = os.path.join(kdir, entry, "anchor-sources.json")
+    if os.path.exists(anchor_path):
+        with open(anchor_path) as f:
+            anchor_count = len(json.loads(f.read()).get("anchors", []))
+
+    topics.append({
+        "topic": meta.get("topic", "?"),
+        "hash": entry,
+        "core": core_count,
+        "peripheral": peri_count,
+        "anchors": anchor_count,
+        "researches": meta.get("research_count", 0),
+        "last_updated": meta.get("updated_at", "?")
+    })
+    total_core += core_count
+    total_peripheral += peri_count
+    total_anchors += anchor_count
+
+print(json.dumps({
+    "total_topics": len(topics),
+    "total_core_facts": total_core,
+    "total_peripheral_facts": total_peripheral,
+    "total_anchors": total_anchors,
+    "topics": topics
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_topics() {
+    cmd_stats | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if not data.get('topics'):
+    print('No topics found.')
+else:
+    for t in data['topics']:
+        print(f\"  {t['hash'][:8]}  {t['topic']:<40} core:{t['core']} peri:{t['peripheral']} anchors:{t['anchors']} ({t['last_updated']})\")
+"
+}
+
+case "${1:-help}" in
+    save)        shift; cmd_save "$@" ;;
+    load)        shift; cmd_load "$@" ;;
+    match)       shift; cmd_match "$@" ;;
+    anchors)     shift; cmd_anchors "$@" ;;
+    conflicts)   shift; cmd_conflicts "$@" ;;
+    update-core) shift; cmd_update_core "$@" ;;
+    stats)       cmd_stats ;;
+    topics)      cmd_topics ;;
+    help)        usage ;;
+    *)           usage ;;
+esac

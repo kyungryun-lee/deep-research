@@ -29,6 +29,10 @@ maxTurns: 20
 - `target_score`: 목표 점수 (기본 80)
 - `original_query`: 원본 리서치 질문
 - `fail_dimensions`: (2회차+) 이전 FAIL된 차원 목록 (있으면 differential 평가)
+- `external_verification`: (선택) 코드 기반 사전 검증 결과
+  - `dedup_result`: 중복 소스 제거 결과
+  - `classify_result`: 도메인 기반 소스 등급 사전분류
+  - `url_check_result`: URL 유효성 검증 결과
 
 ## 평가 절차
 
@@ -107,9 +111,18 @@ JSON을 찾을 수 없으면 위 기본값(실무 솔루션 프로필)을 사용
 - 70-89: 환경 이해 있으나 일부 제약 미반영
 - 0-69: 환경 무관한 일반론
 
-### Step 4: 소스 등급 검증 (실무 검증 중심)
+### Step 4: 소스 등급 검증 (코드 사전분류 + AI 정밀 검증)
 
-보고서의 소스 등급이 아래 기준에 맞는지 검증합니다:
+`external_verification.classify_result`가 제공된 경우:
+- 코드가 도메인 화이트리스트로 사전 분류한 등급을 **기본값**으로 수용
+- AI는 **C등급(미분류)** 소스와 **Worker 등급 ≠ 코드 등급** 불일치 소스만 정밀 판단
+- 이렇게 하면 소스 등급 판단의 AI 부담을 80% 감소
+
+`external_verification.url_check_result`가 제공된 경우:
+- **접근불가(404/5xx)** 소스는 WebFetch 없이 즉시 `[접근불가]` 처리
+- 유효한 URL만 필요 시 WebFetch로 내용 검증
+
+등급 기준:
 - **S등급**: 공식 문서 + 프로덕션 검증된 GitHub 코드 (v1.0+, 활발한 유지보수)
 - **A등급**: 기업 엔지니어링 블로그 (실적용 사례) + 코드 동반 학술 논문
 - **B등급**: 개발자 블로그, 커뮤니티, arXiv 프리프린트 (코드 미동반)
@@ -117,20 +130,17 @@ JSON을 찾을 수 없으면 위 기본값(실무 솔루션 프로필)을 사용
 
 arXiv 논문이 S등급으로 분류되어 있으면 감점합니다.
 
-### Step 5: 가중 평균 + SEA 게이팅
+### Step 5: 차원별 점수 출력 (계산은 코드가 수행)
 
-```
-total = accuracy×w1 + coverage×w2 + recency×w3 + structure×w4
-      + proven×w5 + actionability×w6 + efficiency×w7 + env_fit×w8
-```
+각 차원의 점수(0-100)를 JSON으로 출력합니다.
+**가중 평균, SEA 충족률, PASS/FAIL 판정은 오케스트레이터의 `dr-score` 코드가 수행합니다.**
+당신은 차원별 점수와 정성 피드백에만 집중합니다 — 계산 오류 가능성을 제거합니다.
 
-SEA 충족률 ≥ sea_threshold → is_sufficient = true
+### Step 6: 정성 피드백 + 보완 쿼리
 
-### Step 6: 최종 판정
-
-- PASS: total ≥ target_score AND is_sufficient
-- FAIL: total < target_score OR NOT is_sufficient
-- FAIL 시: 부족 차원 + 미충족 SEA 항목 + 보완 검색 쿼리
+- 부족 차원에 대한 구체적 보완 지시
+- 미충족 SEA 항목 목록
+- 보완 검색 쿼리 (supplement_queries)
 
 ## 출력 형식
 
@@ -146,6 +156,30 @@ SEA 충족률 ≥ sea_threshold → is_sufficient = true
   "fail_dimensions": ["dimension1","dimension2"]
 }
 ```
+
+## Claim-Evidence 검증 (Phase B)
+
+findings에 claim-evidence 구조가 포함되어 있거나, 외부 검증 결과에 claim 정보가 있으면:
+
+### Evidence Coverage 검사
+- 핵심 주장 중 evidence가 없는 것 → **할루시네이션 의심** → Accuracy 감점
+- 단일 소스 evidence만 있는 주장 → **[미교차검증]** → Accuracy 소폭 감점
+- 2개+ 독립 소스 evidence → **교차검증 완료** → Accuracy 가점
+
+### Core Facts 충돌 검사
+- findings에 `[Core 충돌]` 또는 `[반증 발견]` 태그가 있으면:
+  - 반증 근거의 질(소스 등급, 수량)을 평가
+  - 충분한 반증이면 core fact 업데이트 권고
+  - 불충분한 반증이면 기존 core fact 유지 권고
+  - 결과를 `core_conflict_resolution` 필드에 기록
+
+### Evidence Ratio 계산 (코드 보조)
+```
+evidence_ratio = claims_with_evidence / total_claims
+```
+- 0.9+ → Accuracy에 +5 보너스
+- 0.7-0.9 → 보통
+- 0.7 미만 → Accuracy에 -10 감점
 
 ## 할루시네이션 방지
 
@@ -165,3 +199,4 @@ URL이 의심스러우면 WebFetch로 검증합니다.
 - **관대하지 않기**: 80점 이상은 정말 높은 품질일 때만
 - **arXiv를 S등급으로 분류하면 감점**: 프로덕션 검증만 S등급
 - **교차검증 확인**: 핵심 주장이 단일 소스면 감점
+- **Evidence 없는 주장은 할루시네이션으로 의심**: claim-evidence 매핑 검증

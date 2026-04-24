@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# Deep Research Verify CLI
+# External verification: URL validity check + domain-based source tier classification
+# Replaces AI calls for deterministic verification tasks
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+usage() {
+    cat <<'EOF'
+Deep Research Verify CLI
+
+Usage: dr-verify <command> [args]
+
+Commands:
+  classify        Classify source tiers from URLs (stdin: JSON array of URLs)
+  check-urls      Check URL validity via HTTP HEAD (stdin: JSON array of URLs)
+  check-one URL   Check single URL validity
+  tiers           Show tier classification rules
+  help            Show this help
+
+Examples:
+  echo '["https://arxiv.org/abs/2401.00001","https://docs.python.org/3/"]' | dr-verify classify
+  echo '["https://example.com/page"]' | dr-verify check-urls
+  dr-verify check-one https://arxiv.org/abs/2401.00001
+EOF
+}
+
+# Domain-based source tier whitelist
+# S: Official docs, peer-reviewed venues, primary data
+# A: Engineering blogs, arXiv preprints, well-known dev resources
+# B: Community, personal blogs, general tech media
+# C: Marketing, unverified, SEO content
+classify_url() {
+    local url="$1"
+    local domain
+    domain=$(echo "$url" | sed -E 's|https?://([^/]+).*|\1|' | sed 's/^www\.//')
+
+    # S-tier: Official documentation & peer-reviewed
+    case "$domain" in
+        docs.anthropic.com|docs.python.org|docs.github.com|docs.docker.com|\
+        docs.aws.amazon.com|cloud.google.com|learn.microsoft.com|\
+        developer.mozilla.org|developer.apple.com|developer.android.com|\
+        pytorch.org|tensorflow.org|react.dev|nextjs.org|vuejs.org|\
+        nodejs.org|go.dev|docs.rs|docs.oracle.com|\
+        proceedings.neurips.cc|openreview.net|aclanthology.org|\
+        dl.acm.org|ieeexplore.ieee.org|nature.com|science.org|\
+        doi.org|pubs.acs.org)
+            echo "S"
+            return ;;
+    esac
+
+    # S-tier patterns
+    if [[ "$domain" =~ ^docs\. ]] || [[ "$domain" =~ \.readthedocs\. ]]; then
+        echo "S"
+        return
+    fi
+
+    # A-tier: Engineering blogs, arXiv, reputable tech sources
+    case "$domain" in
+        arxiv.org|arxiv.html|export.arxiv.org|\
+        engineering.fb.com|engineering.atspotify.com|netflixtechblog.com|\
+        blog.cloudflare.com|aws.amazon.com/blogs|\
+        blog.google|openai.com|anthropic.com|\
+        github.com|stackoverflow.com|\
+        huggingface.co|paperswithcode.com|\
+        martinfowler.com|blog.pragmaticengineer.com)
+            echo "A"
+            return ;;
+    esac
+
+    # A-tier patterns
+    if [[ "$domain" =~ ^engineering\. ]] || [[ "$domain" =~ ^blog\..+\.com$ ]] || \
+       [[ "$url" =~ github\.com/.+/blob/ ]] || [[ "$url" =~ github\.com/.+/tree/ ]]; then
+        echo "A"
+        return
+    fi
+
+    # B-tier: Community, personal blogs, general tech
+    case "$domain" in
+        medium.com|dev.to|hashnode.dev|hackernews.com|\
+        news.ycombinator.com|reddit.com|*.reddit.com|\
+        towardsdatascience.com|freecodecamp.org|\
+        infoq.com|dzone.com|theregister.com|\
+        baeldung.com|geeksforgeeks.org|tutorialspoint.com|\
+        youtube.com|*.youtube.com)
+            echo "B"
+            return ;;
+    esac
+
+    # Default: C-tier (unknown domains need AI review)
+    echo "C"
+}
+
+cmd_classify() {
+    local input
+    input=$(cat)
+
+    # Parse JSON array of URLs
+    if ! command -v python3 &>/dev/null; then
+        echo '{"error":"python3 required for JSON parsing"}'
+        return 1
+    fi
+
+    python3 -c "
+import json, sys, subprocess
+
+urls = json.loads('''$input''')
+results = []
+for url in urls:
+    proc = subprocess.run(
+        ['bash', '-c', 'source \"$1\" && classify_url \"$2\"', '_', '$0', url],
+        capture_output=True, text=True
+    )
+    tier = proc.stdout.strip() or 'C'
+    results.append({'url': url, 'tier': tier})
+
+# Summary
+tiers = {}
+for r in results:
+    tiers[r['tier']] = tiers.get(r['tier'], 0) + 1
+
+print(json.dumps({
+    'classifications': results,
+    'summary': tiers,
+    'ai_review_needed': [r['url'] for r in results if r['tier'] == 'C']
+}, ensure_ascii=False, indent=2))
+" 2>/dev/null || {
+        # Fallback: process URLs line by line
+        echo "$input" | python3 -c "
+import json, sys
+urls = json.loads(sys.stdin.read())
+results = []
+for url in urls:
+    results.append({'url': url, 'tier': 'C', 'note': 'fallback mode'})
+print(json.dumps({'classifications': results, 'summary': {'C': len(urls)}, 'ai_review_needed': urls}, ensure_ascii=False))
+"
+    }
+}
+
+cmd_classify_direct() {
+    # Direct classification: read stdin, write to tmpfile, pass as arg to python
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" << 'PYEOF'
+import json, sys, re
+
+with open(sys.argv[1]) as f:
+    input_data = json.loads(f.read())
+
+S_DOMAINS = {
+    'docs.anthropic.com', 'docs.python.org', 'docs.github.com', 'docs.docker.com',
+    'docs.aws.amazon.com', 'cloud.google.com', 'learn.microsoft.com',
+    'developer.mozilla.org', 'developer.apple.com', 'developer.android.com',
+    'pytorch.org', 'tensorflow.org', 'react.dev', 'nextjs.org', 'vuejs.org',
+    'nodejs.org', 'go.dev', 'docs.rs', 'docs.oracle.com',
+    'proceedings.neurips.cc', 'openreview.net', 'aclanthology.org',
+    'dl.acm.org', 'ieeexplore.ieee.org', 'nature.com', 'science.org',
+    'doi.org', 'pubs.acs.org', 'code.visualstudio.com'
+}
+
+A_DOMAINS = {
+    'arxiv.org', 'github.com', 'stackoverflow.com',
+    'engineering.fb.com', 'engineering.atspotify.com', 'netflixtechblog.com',
+    'blog.cloudflare.com', 'openai.com', 'anthropic.com',
+    'huggingface.co', 'paperswithcode.com',
+    'martinfowler.com', 'blog.pragmaticengineer.com'
+}
+
+B_DOMAINS = {
+    'medium.com', 'dev.to', 'hashnode.dev',
+    'news.ycombinator.com', 'reddit.com',
+    'towardsdatascience.com', 'freecodecamp.org',
+    'infoq.com', 'dzone.com', 'baeldung.com',
+    'geeksforgeeks.org', 'youtube.com'
+}
+
+def extract_domain(url):
+    m = re.match(r'https?://(?:www\.)?([^/]+)', url)
+    return m.group(1) if m else ''
+
+def classify(url):
+    domain = extract_domain(url)
+    if domain in S_DOMAINS: return 'S'
+    if domain in A_DOMAINS: return 'A'
+    if domain in B_DOMAINS: return 'B'
+    if domain.startswith('docs.') or '.readthedocs.' in domain: return 'S'
+    if domain.startswith('engineering.') or domain.startswith('blog.'): return 'A'
+    if 'github.com' in url and ('/blob/' in url or '/tree/' in url): return 'A'
+    return 'C'
+
+urls = input_data if isinstance(input_data, list) else input_data.get('urls', [])
+results = [{'url': u, 'tier': classify(u)} for u in urls]
+tiers = {}
+for r in results:
+    tiers[r['tier']] = tiers.get(r['tier'], 0) + 1
+
+print(json.dumps({
+    'classifications': results,
+    'summary': tiers,
+    'ai_review_needed': [r['url'] for r in results if r['tier'] == 'C']
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_check_urls() {
+    local tmpfile timeout
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    timeout="${1:-5}"
+
+    python3 - "$tmpfile" "$timeout" << 'PYEOF'
+import json, urllib.request, urllib.error, ssl, sys
+
+with open(sys.argv[1]) as f:
+    urls = json.loads(f.read())
+timeout_val = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+
+results = []
+for url in urls:
+    try:
+        req = urllib.request.Request(url, method='HEAD',
+            headers={'User-Agent': 'Mozilla/5.0 (Deep-Research-Verify/1.0)'})
+        resp = urllib.request.urlopen(req, timeout=timeout_val, context=ctx)
+        results.append({
+            'url': url,
+            'status': resp.status,
+            'valid': True
+        })
+    except urllib.error.HTTPError as e:
+        results.append({
+            'url': url,
+            'status': e.code,
+            'valid': e.code < 400
+        })
+    except Exception as e:
+        results.append({
+            'url': url,
+            'status': 0,
+            'valid': False,
+            'error': str(e)[:100]
+        })
+
+valid = sum(1 for r in results if r['valid'])
+invalid = [r['url'] for r in results if not r['valid']]
+
+print(json.dumps({
+    'results': results,
+    'summary': {'total': len(results), 'valid': valid, 'invalid': len(invalid)},
+    'invalid_urls': invalid
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_check_one() {
+    local url="$1"
+    echo "[\"$url\"]" | cmd_check_urls
+}
+
+cmd_tiers() {
+    cat <<'EOF'
+Source Tier Classification Rules
+================================
+S-tier (Official/Peer-reviewed):
+  - Official documentation (docs.*, readthedocs.*)
+  - Peer-reviewed venues (NeurIPS, ICML, ACL, IEEE, Nature, Science)
+  - Primary data sources (doi.org)
+
+A-tier (Engineering/Research):
+  - arXiv preprints
+  - GitHub code (repos, blob, tree)
+  - Engineering blogs (engineering.*, blog.*)
+  - Major tech companies (Anthropic, OpenAI)
+  - Stack Overflow
+
+B-tier (Community/General):
+  - Medium, Dev.to, Hashnode
+  - Reddit, HackerNews
+  - Tutorial sites (Baeldung, GeeksForGeeks)
+  - YouTube
+
+C-tier (Unknown — AI review needed):
+  - All other domains
+  - Marketing content
+  - Unrecognized sources
+EOF
+}
+
+# Main dispatch
+case "${1:-help}" in
+    classify)    cmd_classify_direct ;;
+    check-urls)  cmd_check_urls "${2:-5}" ;;
+    check-one)   cmd_check_one "$2" ;;
+    tiers)       cmd_tiers ;;
+    help)        usage ;;
+    *)           usage ;;
+esac

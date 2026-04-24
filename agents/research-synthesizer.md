@@ -43,7 +43,9 @@ maxTurns: 25
 
 ### 1. {발견 제목}
 {2-3문장 요약}
-- **근거**: {소스 URL} (등급: S/A)
+- **Evidence**: [{소스 제목}]({URL}) (등급: S/A) — "{핵심 인용문}"
+- **Cross-verified by**: [{교차검증 소스}]({URL2}) (등급: S/A)
+- **Confidence**: HIGH/MEDIUM/LOW (독립 소스 {n}개)
 - **데이터**: {구체적 수치나 벤치마크}
 
 ### 2. {발견 제목}
@@ -172,6 +174,75 @@ sessions.jsonl 파일에 기록하는 방법:
 - JSON 안의 작은따옴표는 이스케이프합니다
 - Bash 도구가 사용 불가면 Write로 폴백합니다 (기존 내용 Read 후 마지막 줄에 추가)
 
+## Part 3: Knowledge 저장 (일관성 보장)
+
+보고서의 발견�� Core/Peripheral/Anchor로 분류하여 Knowledge DB에 저장합니다.
+이 데이터는 같은 주제의 다음 리서치에서 앵커로 사용됩니다.
+
+### 분류 규칙
+
+**Core Facts (고정 — 코어 진입 조건)**:
+- 2개+ 독립 소스에서 교차 검증 완료
+- 소스 등급 S 또는 A
+- 정량 수치가 포함된 사실 우선
+- 예: "ADORE가 DeepResearch Bench 1위 (52.65점)" → core
+
+**Peripheral Facts (유연)**:
+- 단일 소스에서만 확인된 사실
+- 트렌드, 사례, 의견
+- 예: "OpenAI Deep Research는 o3 기반 단일 에이전트" → peripheral (구조 비공개)
+
+**Anchor Sources (핵심 소스)**:
+- S/A 등급 소스 중 핵심 근거를 제공한 것
+- 다음 리서치 시 재확인 우선 대상
+
+### Claim-Evidence 매핑
+
+보고서의 각 핵심 발견에 대해 claim-evidence 구조를 생성합니다:
+
+```json
+{
+  "claims": [
+    {
+      "id": "CL-001",
+      "text": "주장 텍스트",
+      "evidence": [
+        {"url": "소스URL", "tier": "A", "excerpt": "핵심 인용문", "page": "해당 섹션"}
+      ],
+      "confidence": "high|medium|low",
+      "cross_verified": true
+    }
+  ],
+  "unverified_claims": [
+    {"id": "CL-NNN", "text": "주장", "confidence": "low", "reason": "단일 소스"}
+  ]
+}
+```
+
+Confidence 판단 기준:
+- **HIGH**: 2개+ 독립 소스, S/A 등급, 정량 데이터
+- **MEDIUM**: 1개 S/A 소스 또는 2개+ B 소스
+- **LOW**: 단일 B/C 소스, 정성적 주장
+
+### 저장 실행
+
+Bash 도구로 `dr-knowledge save` 스크립트를 호출합니다:
+
+```bash
+echo '{knowledge_json}' | ${PLUGIN_DIR}/bin/dr-knowledge save --topic "{리서치 주제}"
+```
+
+knowledge_json 구조:
+```json
+{
+  "core_facts": [{"id":"CF-001","claim":"...","evidence":[...]}],
+  "peripheral": [{"id":"PF-001","claim":"..."}],
+  "anchors": [{"url":"...","tier":"S","role":"primary"}],
+  "claims": [{claim-evidence 배열}],
+  "unverified_claims": [{미검증 주장 배열}]
+}
+```
+
 ## 최종 출력
 
 보고서 저장 완료 후 오케스트레이터에게 반환할 요약:
@@ -180,4 +251,5 @@ sessions.jsonl 파일에 기록하는 방법:
 보고서 저장: {output_path}
 점수: {score}/100 | 소스: {total}건 (S:{n} A:{n} B:{n} C:{n})
 반복: {iterations}회 | 학습 기록: 저장 완료
+Knowledge: core {n}건, peripheral {n}건, anchors {n}건, claims {n}건
 ```

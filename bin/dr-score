@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# Deep Research Score Calculator
+# Deterministic score calculation — replaces AI arithmetic
+# Input: JSON with dimension scores + rubric weights
+# Output: total score, SEA rate, PASS/FAIL verdict
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Deep Research Score Calculator
+
+Usage: dr-score <command> [args]
+
+Commands:
+  calc --rubric <path>    Calculate weighted total from dimension scores (stdin JSON)
+  sea                     Calculate SEA sufficiency rate (stdin JSON)
+  plateau                 Detect score plateau from history (stdin JSON array)
+  help                    Show this help
+
+Input format (calc):
+  {"scores":{"accuracy":85,"coverage":70,...},"target_score":80}
+
+Input format (sea):
+  {"checked":["item1","item2"],"total":["item1","item2","item3"],"threshold":75}
+
+Input format (plateau):
+  {"history":[78,80,81],"threshold":3,"consecutive":2}
+EOF
+}
+
+cmd_calc() {
+    local rubric_path=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --rubric) rubric_path="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local input
+    input=$(cat)
+
+    python3 << PYEOF
+import json, sys
+
+input_data = json.loads('''$input''')
+scores = input_data['scores']
+target = input_data.get('target_score', 80)
+
+# Load rubric weights
+weights = None
+rubric_path = '''$rubric_path'''
+if rubric_path:
+    try:
+        with open(rubric_path) as f:
+            content = f.read()
+        # Extract JSON block from rubric markdown
+        import re
+        m = re.search(r'\`\`\`json\s*\n({.*?})\s*\n\`\`\`', content, re.DOTALL)
+        if m:
+            weights = json.loads(m.group(1))
+    except:
+        pass
+
+# Default weights (실무 솔루션 프로필)
+if not weights:
+    weights = {
+        "core": {"accuracy": 0.15, "coverage": 0.10, "recency": 0.10, "structure": 0.05},
+        "context": {"proven": 0.20, "actionability": 0.20, "efficiency": 0.10, "env_fit": 0.10}
+    }
+
+# Flatten weights
+flat_weights = {}
+for category in weights.values():
+    if isinstance(category, dict):
+        for dim, w in category.items():
+            if isinstance(w, (int, float)):
+                flat_weights[dim] = w
+
+# Calculate weighted total
+total = 0.0
+breakdown = {}
+missing = []
+for dim, w in flat_weights.items():
+    if dim in scores:
+        contribution = scores[dim] * w
+        total += contribution
+        breakdown[dim] = {"score": scores[dim], "weight": w, "contribution": round(contribution, 2)}
+    elif dim not in ('sea_threshold',):
+        missing.append(dim)
+
+total = round(total, 1)
+
+# Determine verdict
+sea_threshold = None
+for category in weights.values():
+    if isinstance(category, dict) and 'sea_threshold' in category:
+        sea_threshold = category['sea_threshold']
+if not sea_threshold:
+    sea_threshold = weights.get('sea_threshold', 75)
+
+verdict = "PASS" if total >= target else "FAIL"
+
+# Find weakest dimensions
+sorted_dims = sorted(breakdown.items(), key=lambda x: x[1]['score'])
+fail_dimensions = [d for d, info in sorted_dims if info['score'] < 70]
+
+print(json.dumps({
+    "total": total,
+    "target": target,
+    "verdict": verdict,
+    "breakdown": breakdown,
+    "fail_dimensions": fail_dimensions,
+    "weakest": sorted_dims[0][0] if sorted_dims else None,
+    "missing_dimensions": missing
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_sea() {
+    local input
+    input=$(cat)
+
+    python3 << PYEOF
+import json
+
+data = json.loads('''$input''')
+checked = data.get('checked', [])
+total = data.get('total', [])
+threshold = data.get('threshold', 75)
+
+if not total:
+    print(json.dumps({"rate": 0, "sufficient": False, "unchecked": []}))
+    sys.exit(0)
+
+rate = round(len(checked) / len(total) * 100, 1)
+unchecked = [item for item in total if item not in checked]
+sufficient = rate >= threshold
+
+print(json.dumps({
+    "rate": rate,
+    "threshold": threshold,
+    "sufficient": sufficient,
+    "checked_count": len(checked),
+    "total_count": len(total),
+    "unchecked": unchecked
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_plateau() {
+    local input
+    input=$(cat)
+
+    python3 << PYEOF
+import json
+
+data = json.loads('''$input''')
+history = data.get('history', [])
+threshold = data.get('threshold', 3)      # minimum improvement to not be plateau
+consecutive = data.get('consecutive', 2)   # consecutive low-improvement rounds
+
+if len(history) < 2:
+    print(json.dumps({"plateau": False, "reason": "insufficient history"}))
+else:
+    improvements = [history[i] - history[i-1] for i in range(1, len(history))]
+
+    # Check last N improvements
+    recent = improvements[-consecutive:] if len(improvements) >= consecutive else improvements
+    is_plateau = all(imp < threshold for imp in recent) and len(recent) >= consecutive
+
+    # Check if all dimensions >= 70 (near-sufficient)
+    near_sufficient = all(s >= 70 for s in [history[-1]]) if history else False
+
+    print(json.dumps({
+        "plateau": is_plateau,
+        "improvements": improvements,
+        "recent_improvements": recent,
+        "threshold": threshold,
+        "consecutive_required": consecutive,
+        "recommendation": "EARLY_STOP" if is_plateau else "CONTINUE",
+        "reason": f"Last {len(recent)} improvements all < {threshold}%" if is_plateau else "Still improving"
+    }, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+case "${1:-help}" in
+    calc)     shift; cmd_calc "$@" ;;
+    sea)      cmd_sea ;;
+    plateau)  cmd_plateau ;;
+    help)     usage ;;
+    *)        usage ;;
+esac

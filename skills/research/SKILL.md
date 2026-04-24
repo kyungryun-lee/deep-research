@@ -311,6 +311,21 @@ score_history = []  # 각 라운드의 total 점수 기록
 4. **편향 완화**: 절대적 품질 기준으로만 채점.
 
 ### Evaluator 프롬프트
+
+**중요**: Evaluator는 반드시 rubric에 정의된 차원명으로 scores를 반환해야 합니다.
+rubric JSON에서 차원명을 추출하여 프롬프트에 명시합니다:
+```bash
+# rubric에서 차원명 추출
+python3 -c "
+import json, re
+with open('${PLUGIN_DIR}/skills/research/rubrics/${rubric}.md') as f:
+    m = re.search(r'\`\`\`json\s*\n({.*?})\s*\n\`\`\`', f.read(), re.DOTALL)
+    w = json.loads(m.group(1))
+    dims = [d for cat in w.values() if isinstance(cat, dict) for d in cat]
+    print(json.dumps(dims))
+"
+```
+
 ```
 아래 리서치 결과의 품질을 평가해주세요.
 
@@ -321,6 +336,9 @@ score_history = []  # 각 라운드의 total 점수 기록
 평가 기준: {rubric 파일 내용}
 SEA 체크리스트: {sea_checklist}
 목표 점수: {target_score}
+
+**반드시 아래 차원명으로 scores를 반환해주세요** (rubric 가중치와 정확히 일치해야 함):
+{rubric_dimension_names}
 
 외부 검증 결과 (코드 실행):
 - 중복 제거: {dedup_result}

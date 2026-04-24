@@ -39,7 +39,9 @@ classify_url() {
 
     # S-tier: Official documentation & peer-reviewed
     case "$domain" in
-        docs.anthropic.com|docs.python.org|docs.github.com|docs.docker.com|\
+        docs.anthropic.com|platform.claude.com|code.claude.com|claude.com|\
+        modelcontextprotocol.io|api.anthropic.com|\
+        docs.python.org|docs.github.com|docs.docker.com|\
         docs.aws.amazon.com|cloud.google.com|learn.microsoft.com|\
         developer.mozilla.org|developer.apple.com|developer.android.com|\
         pytorch.org|tensorflow.org|react.dev|nextjs.org|vuejs.org|\
@@ -152,7 +154,9 @@ with open(sys.argv[1]) as f:
     input_data = json.loads(f.read())
 
 S_DOMAINS = {
-    'docs.anthropic.com', 'docs.python.org', 'docs.github.com', 'docs.docker.com',
+    'docs.anthropic.com', 'platform.claude.com', 'code.claude.com', 'claude.com',
+    'modelcontextprotocol.io', 'api.anthropic.com',
+    'docs.python.org', 'docs.github.com', 'docs.docker.com',
     'docs.aws.amazon.com', 'cloud.google.com', 'learn.microsoft.com',
     'developer.mozilla.org', 'developer.apple.com', 'developer.android.com',
     'pytorch.org', 'tensorflow.org', 'react.dev', 'nextjs.org', 'vuejs.org',

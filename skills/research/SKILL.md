@@ -293,6 +293,45 @@ echo '{urls_json}' | ${PLUGIN_DIR}/bin/dr-verify check-urls
 - 404/5xx 소스는 `[접근불가]` 태그 부착
 - Evaluator에게 검증 결과 전달 (AI의 WebFetch 호출 감소)
 
+### 3.5.4 소스 다양성 (Shannon Entropy)
+```bash
+echo '{urls_json}' | ${PLUGIN_DIR}/bin/dr-score diversity
+```
+- 도메인별 Shannon entropy 계산 (높을수록 다양)
+- 결과: `diversity_entropy`, `unique_domains`
+
+### 3.5.5 최신성 사전계산
+```bash
+echo '{sources_with_years_json}' | ${PLUGIN_DIR}/bin/dr-score recency
+```
+- 소스 발행연도 기반 가중 점수 (2년 이내 비율 포함)
+- 결과: `recency_score`, `recent_ratio`
+
+### 3.5.6 교차참조 밀도
+```bash
+echo '{claim_evidence_json}' | ${PLUGIN_DIR}/bin/dr-score xref
+```
+- 2개+ 독립 소스 근거가 있는 주장의 비율
+- 결과: `xref_density`, `multi_cited`, `no_evidence`
+
+### 3.5.7 구조 분석
+```bash
+echo '{report_markdown}' | ${PLUGIN_DIR}/bin/dr-score structure
+```
+- 제목 계층/섹션 균형/분량 분석
+- 결과: `structure_score`, `balance`, `word_count`
+
+### Phase 3.5 결과 종합
+```
+code_metrics = {
+  "diversity_entropy": {3.5.4 결과}.entropy,
+  "recency_score": {3.5.5 결과}.recency_score,
+  "recent_ratio": {3.5.5 결과}.recent_ratio,
+  "xref_density": {3.5.6 결과}.density,
+  "structure_score": {3.5.7 결과}.structure_score
+}
+```
+
 ---
 
 ## Phase 4: EVALUATE (Verifier)
@@ -344,15 +383,26 @@ SEA 체크리스트: {sea_checklist}
 - 중복 제거: {dedup_result}
 - 소스 등급 사전분류: {classify_result}
 - URL 유효성: {url_check_result}
+
+코드 사전계산 메트릭 (evidence로 참고 — 판단은 AI가):
+- 소스 다양성 Shannon H: {code_metrics.diversity_entropy} ({unique_domains}개 도메인)
+- 최신성 사전계산: {code_metrics.recency_score} (최근 2년 비율: {code_metrics.recent_ratio})
+- 교차참조 밀도: {code_metrics.xref_density} ({multi_cited}/{total} 주장이 2+소스)
+- 구조 점수: {code_metrics.structure_score} (균형: {balance})
+
+평가 시 rubric의 "캘리브레이션 앵커" 섹션을 참고하여 점수 스케일을 보정하세요.
+90점 이상은 캘리브레이션 앵커의 High Quality 기준을 충족할 때만 부여합니다.
 ```
 
-### 점수 계산 분리 (코드 — AI 호출 0)
+### 점수 계산 분리 (코드 — AI 호출 0, 블렌딩 포함)
 
-Evaluator가 반환한 차원별 점수 JSON을 코드로 계산합니다:
+Evaluator가 반환한 차원별 점수 JSON을 코드로 계산합니다.
+code_metrics가 있으면 Recency/Structure를 블렌딩 (70% 코드 + 30% AI):
 ```bash
-echo '{evaluator_scores_json}' | ${PLUGIN_DIR}/bin/dr-score calc --rubric {rubric}
+echo '{evaluator_scores_json}' | ${PLUGIN_DIR}/bin/dr-score calc --rubric {rubric} --code-metrics '{code_metrics_json}'
 ```
 - 가중 평균 total 점수 계산 (AI 계산 오류 제거)
+- code_metrics 있으면 Recency/Structure 블렌딩 (70% 코드 + 30% AI → 분산 감소)
 - SEA 충족률 계산 (체크리스트 항목 카운트)
 - PASS/FAIL 판정 (total ≥ target_score AND sea_rate ≥ threshold)
 

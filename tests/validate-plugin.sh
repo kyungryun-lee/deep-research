@@ -202,6 +202,56 @@ else
     fail "Worker missing anchor source handling"
 fi
 
+# --- 10. Extended Harness Scripts ---
+echo ""
+echo "[10] Extended Harness Scripts"
+
+# dr-score diversity test
+DIV_OUT=$(echo '["https://a.com","https://b.com","https://a.com/page"]' | "$PLUGIN_DIR/bin/dr-score" diversity 2>/dev/null)
+echo "$DIV_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'entropy' in d and d['total']==3" 2>/dev/null && pass "dr-score diversity works" || fail "dr-score diversity failed"
+
+# dr-score recency test
+REC_OUT=$(echo '[{"url":"a","year":2026},{"url":"b","year":2024}]' | "$PLUGIN_DIR/bin/dr-score" recency 2>/dev/null)
+echo "$REC_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'recency_score' in d and d['total']==2" 2>/dev/null && pass "dr-score recency works" || fail "dr-score recency failed"
+
+# dr-score xref test
+XREF_OUT=$(echo '[{"claim":"A","evidence":[{"url":"x"},{"url":"y"}]},{"claim":"B","evidence":[]}]' | "$PLUGIN_DIR/bin/dr-score" xref 2>/dev/null)
+echo "$XREF_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['multi_cited']==1 and d['no_evidence']==1" 2>/dev/null && pass "dr-score xref works" || fail "dr-score xref failed"
+
+# dr-score structure test
+STRUCT_OUT=$(printf '# Title\n## A\nContent.\n## B\nMore.\n' | "$PLUGIN_DIR/bin/dr-score" structure 2>/dev/null)
+echo "$STRUCT_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'structure_score' in d and d['headings']['h2']==2" 2>/dev/null && pass "dr-score structure works" || fail "dr-score structure failed"
+
+# dr-score calc blending test
+BLEND_OUT=$(echo '{"scores":{"accuracy":80,"coverage":80,"recency":70,"structure":80,"proven":80,"actionability":80,"efficiency":80,"env_fit":80},"target_score":80}' | "$PLUGIN_DIR/bin/dr-score" calc --rubric "$PLUGIN_DIR/skills/research/rubrics/default.md" --code-metrics '{"recency_score":90,"structure_score":60}' 2>/dev/null)
+echo "$BLEND_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+# recency should be blended: 0.7*90 + 0.3*70 = 84
+assert abs(d['breakdown']['recency']['score'] - 84) < 1, f'recency={d[\"breakdown\"][\"recency\"][\"score\"]}'
+# structure should be blended: 0.7*60 + 0.3*80 = 66
+assert abs(d['breakdown']['structure']['score'] - 66) < 1, f'structure={d[\"breakdown\"][\"structure\"][\"score\"]}'
+" 2>/dev/null && pass "dr-score calc blending works" || fail "dr-score calc blending failed"
+
+# dr-consistency executable
+[ -x "$PLUGIN_DIR/bin/dr-consistency" ] && pass "dr-consistency is executable" || fail "dr-consistency not executable"
+
+# Rubric calibration anchors
+for rubric in default poc exploration; do
+    if grep -q "캘리브레이션 앵커" "$PLUGIN_DIR/skills/research/rubrics/$rubric.md"; then
+        pass "$rubric.md has calibration anchors"
+    else
+        fail "$rubric.md missing calibration anchors"
+    fi
+done
+
+# SKILL.md has code_metrics
+if grep -q "code_metrics" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has code_metrics integration"
+else
+    fail "SKILL.md missing code_metrics"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Results ==="

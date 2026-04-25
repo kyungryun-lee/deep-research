@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# Deep Research Consistency Measurement CLI
+# Compares two research reports to measure cross-run consistency
+# Uses: URL Jaccard, TF-IDF cosine similarity, score delta, core stability
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+    cat <<'EOF'
+Deep Research Consistency Measurement
+
+Usage: dr-consistency <command> [args]
+
+Commands:
+  compare --run1 <path> --run2 <path>   Compare two research reports
+  help                                   Show this help
+
+Output format (compare):
+  {
+    "source_jaccard": 0.65,       # URL overlap ratio (0-1)
+    "fact_overlap": 0.58,          # Section keyword cosine similarity (0-1)
+    "score_delta": 3.2,            # Evaluation score difference
+    "core_stability": 0.82,        # Core facts match ratio (0-1)
+    "verdict": "CONSISTENT"        # CONSISTENT(>0.6)/MODERATE(0.4-0.6)/INCONSISTENT(<0.4)
+  }
+
+Targets:
+  source_jaccard > 0.5, fact_overlap > 0.5, score_delta < 5, core_stability > 0.7
+EOF
+}
+
+cmd_compare() {
+    local run1="" run2=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --run1) run1="$2"; shift 2 ;;
+            --run2) run2="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "$run1" || -z "$run2" ]]; then
+        echo '{"error": "Both --run1 and --run2 are required"}' >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$run1" || ! -f "$run2" ]]; then
+        echo '{"error": "One or both report files not found"}' >&2
+        exit 1
+    fi
+
+    python3 << PYEOF
+import json, re, math, sys
+from collections import Counter
+from urllib.parse import urlparse
+
+def read_file(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+def extract_urls(text):
+    """Extract all URLs from markdown text."""
+    url_pattern = r'https?://[^\s\)\]\>\"\'，、）]+'
+    urls = re.findall(url_pattern, text)
+    # Normalize: strip trailing punctuation, lowercase domain
+    normalized = set()
+    for u in urls:
+        u = u.rstrip('.,;:!?')
+        try:
+            parsed = urlparse(u)
+            netloc = parsed.netloc.replace('www.', '').lower()
+            path = parsed.path.rstrip('/')
+            normalized.add(f"{netloc}{path}")
+        except:
+            normalized.add(u)
+    return normalized
+
+def jaccard(set_a, set_b):
+    if not set_a and not set_b:
+        return 1.0
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / len(set_a | set_b)
+
+def extract_sections(text):
+    """Split by h2 headers, return dict of section_title → content."""
+    sections = {}
+    parts = re.split(r'^## (.+)$', text, flags=re.MULTILINE)
+    for i in range(1, len(parts), 2):
+        title = parts[i].strip()
+        content = parts[i+1] if i+1 < len(parts) else ""
+        sections[title] = content
+    return sections
+
+def tokenize(text):
+    """Simple word tokenizer: lowercase, alphanum only, remove stopwords."""
+    stopwords = {'the','a','an','is','are','was','were','be','been','being',
+                 'have','has','had','do','does','did','will','would','could',
+                 'should','may','might','shall','can','need','dare','ought',
+                 'used','to','of','in','for','on','with','at','by','from',
+                 'as','into','through','during','before','after','above',
+                 'below','between','out','off','over','under','again','further',
+                 'then','once','and','but','or','nor','not','so','if','that',
+                 'this','these','those','it','its','i','we','they','them',
+                 'their','our','your','he','she','him','her','which','what',
+                 'who','whom','how','where','when','why','all','each','every',
+                 'both','few','more','most','other','some','such','no','only'}
+    words = re.findall(r'[a-z0-9가-힣]+', text.lower())
+    return [w for w in words if w not in stopwords and len(w) > 1]
+
+def tfidf_cosine(text_a, text_b):
+    """TF-IDF cosine similarity using Python stdlib only."""
+    tokens_a = tokenize(text_a)
+    tokens_b = tokenize(text_b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+
+    tf_a = Counter(tokens_a)
+    tf_b = Counter(tokens_b)
+    vocab = set(tf_a.keys()) | set(tf_b.keys())
+
+    # IDF approximation: use both docs as corpus
+    doc_freq = {}
+    for w in vocab:
+        doc_freq[w] = (1 if w in tf_a else 0) + (1 if w in tf_b else 0)
+
+    # TF-IDF vectors
+    def tfidf_vec(tf, total):
+        vec = {}
+        for w in vocab:
+            tf_val = tf.get(w, 0) / total if total > 0 else 0
+            idf_val = math.log(2 / doc_freq[w]) + 1  # smooth IDF
+            vec[w] = tf_val * idf_val
+        return vec
+
+    vec_a = tfidf_vec(tf_a, len(tokens_a))
+    vec_b = tfidf_vec(tf_b, len(tokens_b))
+
+    # Cosine similarity
+    dot = sum(vec_a.get(w, 0) * vec_b.get(w, 0) for w in vocab)
+    mag_a = math.sqrt(sum(v**2 for v in vec_a.values()))
+    mag_b = math.sqrt(sum(v**2 for v in vec_b.values()))
+
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+def extract_score(text):
+    """Extract quality score from report header."""
+    m = re.search(r'품질\s*점수[:\s]*(\d+(?:\.\d+)?)', text)
+    if m:
+        return float(m.group(1))
+    m = re.search(r'점수[:\s]*(\d+(?:\.\d+)?)\s*/\s*100', text)
+    if m:
+        return float(m.group(1))
+    return None
+
+# --- Main ---
+text1 = read_file('''$run1''')
+text2 = read_file('''$run2''')
+
+# 1. Source Jaccard
+urls1 = extract_urls(text1)
+urls2 = extract_urls(text2)
+source_jaccard = round(jaccard(urls1, urls2), 3)
+
+# 2. Fact overlap (TF-IDF cosine on full text)
+fact_overlap = round(tfidf_cosine(text1, text2), 3)
+
+# 3. Score delta
+score1 = extract_score(text1)
+score2 = extract_score(text2)
+score_delta = round(abs(score1 - score2), 1) if score1 and score2 else None
+
+# 4. Core stability — compare section-level similarity
+secs1 = extract_sections(text1)
+secs2 = extract_sections(text2)
+if secs1 and secs2:
+    # Match sections by title similarity, compute per-section cosine
+    sec_scores = []
+    for title1, content1 in secs1.items():
+        best_sim = 0
+        for title2, content2 in secs2.items():
+            sim = tfidf_cosine(content1, content2)
+            best_sim = max(best_sim, sim)
+        sec_scores.append(best_sim)
+    core_stability = round(sum(sec_scores) / len(sec_scores), 3) if sec_scores else 0
+else:
+    core_stability = fact_overlap  # fallback
+
+# 5. Verdict
+avg_score = (source_jaccard + fact_overlap + core_stability) / 3
+if avg_score > 0.6:
+    verdict = "CONSISTENT"
+elif avg_score > 0.4:
+    verdict = "MODERATE"
+else:
+    verdict = "INCONSISTENT"
+
+result = {
+    "source_jaccard": source_jaccard,
+    "fact_overlap": fact_overlap,
+    "score_delta": score_delta,
+    "core_stability": core_stability,
+    "avg_consistency": round(avg_score, 3),
+    "verdict": verdict,
+    "details": {
+        "urls_run1": len(urls1),
+        "urls_run2": len(urls2),
+        "urls_shared": len(urls1 & urls2),
+        "sections_run1": len(secs1),
+        "sections_run2": len(secs2),
+        "score_run1": score1,
+        "score_run2": score2
+    }
+}
+
+print(json.dumps(result, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+case "${1:-help}" in
+    compare)  shift; cmd_compare "$@" ;;
+    help)     usage ;;
+    *)        usage ;;
+esac

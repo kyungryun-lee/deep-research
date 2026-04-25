@@ -13,9 +13,13 @@ Deep Research Score Calculator
 Usage: dr-score <command> [args]
 
 Commands:
-  calc --rubric <path>    Calculate weighted total from dimension scores (stdin JSON)
+  calc --rubric <path> [--code-metrics <json>]  Calculate weighted total (stdin: dimension scores JSON)
   sea                     Calculate SEA sufficiency rate (stdin JSON)
   plateau                 Detect score plateau from history (stdin JSON array)
+  diversity               Source diversity Shannon entropy (stdin: URL JSON array)
+  recency                 Date-weighted recency score (stdin: [{"url":"...","year":2026},...])
+  xref                    Cross-reference density (stdin: claim-evidence JSON)
+  structure               Markdown structure analysis (stdin: markdown text)
   help                    Show this help
 
 Input format (calc):
@@ -30,10 +34,11 @@ EOF
 }
 
 cmd_calc() {
-    local rubric_path=""
+    local rubric_path="" code_metrics=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --rubric) rubric_path="$2"; shift 2 ;;
+            --code-metrics) code_metrics="$2"; shift 2 ;;
             *) shift ;;
         esac
     done
@@ -47,6 +52,20 @@ import json, sys
 input_data = json.loads('''$input''')
 scores = input_data['scores']
 target = input_data.get('target_score', 80)
+
+# Code metrics blending (70% code + 30% AI for recency/structure)
+code_metrics_str = '''$code_metrics'''
+if code_metrics_str:
+    try:
+        cm = json.loads(code_metrics_str)
+        blend_dims = {'recency': 'recency_score', 'structure': 'structure_score'}
+        for dim, cm_key in blend_dims.items():
+            if dim in scores and cm_key in cm:
+                ai_val = scores[dim]
+                code_val = cm[cm_key]
+                scores[dim] = round(0.7 * code_val + 0.3 * ai_val, 1)
+    except:
+        pass  # Fallback to AI-only scores
 
 # Load rubric weights
 weights = None
@@ -185,10 +204,179 @@ else:
 PYEOF
 }
 
+cmd_diversity() {
+    local input
+    input=$(cat)
+    python3 << PYEOF
+import json, sys, math
+from urllib.parse import urlparse
+
+urls = json.loads('''$input''')
+if not urls:
+    print(json.dumps({"entropy": 0, "unique_domains": 0, "total": 0}))
+    sys.exit(0)
+
+domains = []
+for u in urls:
+    try:
+        netloc = urlparse(u).netloc.replace("www.", "")
+        if netloc:
+            domains.append(netloc)
+    except:
+        pass
+
+total = len(domains)
+if total == 0:
+    print(json.dumps({"entropy": 0, "unique_domains": 0, "total": 0}))
+    sys.exit(0)
+
+from collections import Counter
+counts = Counter(domains)
+unique = len(counts)
+entropy = -sum((c/total) * math.log2(c/total) for c in counts.values()) if total > 0 else 0
+
+print(json.dumps({
+    "entropy": round(entropy, 3),
+    "unique_domains": unique,
+    "total": total,
+    "top_domains": dict(counts.most_common(5))
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_recency() {
+    local input
+    input=$(cat)
+    python3 << PYEOF
+import json, sys
+from datetime import datetime
+
+sources = json.loads('''$input''')
+if not sources:
+    print(json.dumps({"score": 0, "recent_ratio": 0, "total": 0}))
+    sys.exit(0)
+
+current_year = datetime.now().year
+scores = []
+recent_count = 0
+
+for src in sources:
+    year = src.get("year", current_year - 3)
+    if isinstance(year, str):
+        try: year = int(year[:4])
+        except: year = current_year - 3
+    age = current_year - year
+    score = max(0, 100 - (age * 25))  # 0yr=100, 1yr=75, 2yr=50, 3yr=25, 4yr+=0
+    scores.append(score)
+    if age <= 2:
+        recent_count += 1
+
+total = len(scores)
+avg_score = round(sum(scores) / total, 1) if total else 0
+recent_ratio = round(recent_count / total, 3) if total else 0
+
+print(json.dumps({
+    "score": avg_score,
+    "recent_ratio": recent_ratio,
+    "recent_count": recent_count,
+    "total": total,
+    "recency_score": avg_score
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_xref() {
+    local input
+    input=$(cat)
+    python3 << PYEOF
+import json, sys
+
+data = json.loads('''$input''')
+claims = data if isinstance(data, list) else data.get("claims", [])
+
+if not claims:
+    print(json.dumps({"density": 0, "multi_cited": 0, "single_cited": 0, "total": 0}))
+    sys.exit(0)
+
+multi = 0
+single = 0
+no_evidence = 0
+
+for claim in claims:
+    ev = claim.get("evidence", [])
+    if len(ev) >= 2:
+        multi += 1
+    elif len(ev) == 1:
+        single += 1
+    else:
+        no_evidence += 1
+
+total = len(claims)
+density = round(multi / total, 3) if total else 0
+
+print(json.dumps({
+    "density": density,
+    "multi_cited": multi,
+    "single_cited": single,
+    "no_evidence": no_evidence,
+    "total": total
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_structure() {
+    local input
+    input=$(cat)
+    python3 << PYEOF
+import json, sys, re
+
+text = '''$input'''
+if not text.strip():
+    print(json.dumps({"score": 0, "headings": {}, "balance": 0, "word_count": 0}))
+    sys.exit(0)
+
+h1 = len(re.findall(r'^# ', text, re.MULTILINE))
+h2 = len(re.findall(r'^## ', text, re.MULTILINE))
+h3 = len(re.findall(r'^### ', text, re.MULTILINE))
+word_count = len(text.split())
+
+# Section balance: split by h2, measure length variance
+sections = re.split(r'^## ', text, flags=re.MULTILINE)
+if len(sections) > 1:
+    lengths = [len(s.split()) for s in sections[1:]]  # skip pre-h2 content
+    avg_len = sum(lengths) / len(lengths)
+    if avg_len > 0:
+        variance = sum((l - avg_len)**2 for l in lengths) / len(lengths)
+        cv = (variance ** 0.5) / avg_len  # coefficient of variation
+        balance = round(max(0, 1 - cv) * 100, 1)  # 100=perfect balance, 0=extreme imbalance
+    else:
+        balance = 0
+else:
+    balance = 0
+
+# Structure score: heading hierarchy + balance + word count adequacy
+hierarchy_score = min(100, (h1 > 0) * 20 + min(h2, 8) * 8 + min(h3, 15) * 2)
+length_score = min(100, word_count / 20)  # 2000 words = 100
+score = round(0.4 * hierarchy_score + 0.3 * balance + 0.3 * length_score, 1)
+
+print(json.dumps({
+    "score": score,
+    "structure_score": score,
+    "headings": {"h1": h1, "h2": h2, "h3": h3},
+    "balance": balance,
+    "word_count": word_count
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
 case "${1:-help}" in
-    calc)     shift; cmd_calc "$@" ;;
-    sea)      cmd_sea ;;
-    plateau)  cmd_plateau ;;
-    help)     usage ;;
-    *)        usage ;;
+    calc)       shift; cmd_calc "$@" ;;
+    sea)        cmd_sea ;;
+    plateau)    cmd_plateau ;;
+    diversity)  cmd_diversity ;;
+    recency)    cmd_recency ;;
+    xref)       cmd_xref ;;
+    structure)  cmd_structure ;;
+    help)       usage ;;
+    *)          usage ;;
 esac

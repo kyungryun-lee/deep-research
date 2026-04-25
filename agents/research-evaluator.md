@@ -33,6 +33,21 @@ maxTurns: 20
   - `dedup_result`: 중복 소스 제거 결과
   - `classify_result`: 도메인 기반 소스 등급 사전분류
   - `url_check_result`: URL 유효성 검증 결과
+- `code_metrics`: (선택) 코드 사전계산 메트릭 — evidence로 참고 (anchoring 아님)
+  - `diversity_entropy`: 소스 도메인 Shannon entropy
+  - `recency_score`: 날짜 기반 최신성 점수 (0-100)
+  - `recent_ratio`: 최근 2년 이내 소스 비율
+  - `xref_density`: 2+소스 교차참조 주장 비율
+  - `structure_score`: 구조 분석 점수 (제목 계층/균형/분량)
+
+## 코드 메트릭 활용 규칙
+
+code_metrics가 제공된 경우:
+- **Recency 채점**: code_metrics.recency_score를 기반으로 조정. 코드가 날짜 기반으로 계산한 값이 더 정확하므로, AI 판단과 ±15 이상 차이나면 코드 값에 가중.
+- **Structure 채점**: code_metrics.structure_score를 참고. 제목 계층/균형은 코드가 정확히 측정. AI는 논리적 흐름과 가독성만 추가 판단.
+- **Coverage 채점**: code_metrics.xref_density를 참고. 교차참조 밀도가 낮으면(<0.3) 범위 부족 의심.
+- **Accuracy 채점**: code_metrics.diversity_entropy를 참고. 소스 다양성이 낮으면(<1.5) 편향 가능성.
+- 이 메트릭들은 **evidence** (사실적 계산값)이지 prior score가 아님 → anchoring bias 위험 없음.
 
 ## 평가 절차
 

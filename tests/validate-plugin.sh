@@ -681,6 +681,45 @@ with open('$PLUGIN_DIR/skills/research/rubrics/default.md') as f:
     assert abs(total - 1.0) < 0.02, f'weights sum to {total}, expected ~1.0'
 " 2>/dev/null && pass "default rubric weights sum to ~1.0" || fail "default rubric weights don't sum to 1.0"
 
+# --- 16. Benchmark + Env_Fit ---
+echo ""
+echo "[16] Benchmark + Env_Fit"
+
+# dr-bench executable
+[ -x "$PLUGIN_DIR/bin/dr-bench" ] && pass "dr-bench is executable" || fail "dr-bench not executable"
+
+# SKILL.md has context: fork
+if grep -q "^context: fork" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has context: fork (isolated execution)"
+else
+    fail "SKILL.md missing context: fork"
+fi
+
+# Synthesizer has 32K handling
+if grep -q "32K" "$PLUGIN_DIR/agents/research-synthesizer.md"; then
+    pass "Synthesizer has 32K output limit handling"
+else
+    fail "Synthesizer missing 32K handling"
+fi
+
+# hooks.json has UserPromptSubmit
+python3 -c "import json; d=json.load(open('$PLUGIN_DIR/hooks/hooks.json')); assert 'UserPromptSubmit' in d['hooks']" 2>/dev/null && pass "hooks.json has UserPromptSubmit (KB injection)" || fail "hooks.json missing UserPromptSubmit"
+
+# hooks.json has PostToolUse with matcher
+python3 -c "import json; d=json.load(open('$PLUGIN_DIR/hooks/hooks.json')); assert 'PostToolUse' in d['hooks']" 2>/dev/null && pass "hooks.json has PostToolUse (web cache)" || fail "hooks.json missing PostToolUse"
+
+# dr-contradict IDF fix (small corpus)
+CONTRA_SMALL=$(echo '[{"id":"A","text":"X is fast and efficient"},{"id":"B","text":"X is not fast and is slow"}]' | "$PLUGIN_DIR/bin/dr-contradict" detect --threshold 0.3 2>/dev/null)
+echo "$CONTRA_SMALL" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['conflicts_found'] >= 1" 2>/dev/null && pass "dr-contradict works on small corpus (IDF fix)" || fail "dr-contradict small corpus failed"
+
+# dr-dry-run executable + functional test
+[ -x "$PLUGIN_DIR/bin/dr-dry-run" ] && pass "dr-dry-run is executable" || fail "dr-dry-run not executable"
+DRY_OUT=$("$PLUGIN_DIR/bin/dr-dry-run" "test query" --depth surface 2>/dev/null)
+echo "$DRY_OUT" | grep -q "Dry Run Complete" && pass "dr-dry-run produces output" || fail "dr-dry-run failed"
+
+# dr-bench executable
+[ -x "$PLUGIN_DIR/bin/dr-bench" ] && pass "dr-bench is executable (benchmark suite)" || fail "dr-bench not executable"
+
 # --- Summary ---
 echo ""
 echo "=== Results ==="

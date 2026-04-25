@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Deep Research Dry Run — Cost estimation without execution
+# Shows what would happen without making API calls
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+    cat <<'EOF'
+Deep Research Dry Run — Preview and cost estimation
+
+Usage: dr-dry-run "query" [--depth surface|standard|deep] [--rubric profile]
+
+Shows:
+  1. Query classification (profile, complexity, workers)
+  2. Query normalization + cache check
+  3. Estimated token usage + cost
+  4. Research plan preview
+
+No API calls are made. No cost incurred.
+EOF
+}
+
+[ $# -lt 1 ] && { usage; exit 0; }
+
+query="$1"
+depth="${2:-standard}"
+rubric=""
+
+# Parse flags
+shift
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --depth) depth="$2"; shift 2 ;;
+        --rubric) rubric="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
+echo "=== Deep Research Dry Run ==="
+echo "Query: $query"
+echo "Depth: $depth"
+echo ""
+
+# Step 1: Classify
+echo "[1] Query Classification"
+classify_out=$("$PLUGIN_DIR/bin/dr-classify" all "$query" "$depth" 2>/dev/null)
+echo "$classify_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'  Profile: {d[\"profile\"]}')
+print(f'  Complexity: {d[\"complexity\"]}')
+print(f'  Workers: {d[\"workers\"]}')
+print(f'  Recency: {d[\"recency\"]}')
+"
+
+# Override rubric if specified
+if [ -n "$rubric" ]; then
+    echo "  Rubric override: $rubric"
+fi
+
+# Step 2: Normalize + Cache
+echo ""
+echo "[2] Query Normalization"
+norm_out=$("$PLUGIN_DIR/bin/dr-normalize" normalize "$query" 2>/dev/null)
+echo "$norm_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'  Normalized: {d[\"normalized\"]}')
+print(f'  Cache key: {d[\"cache_key\"]}')
+"
+
+echo ""
+echo "[3] Cache Check"
+cache_out=$("$PLUGIN_DIR/bin/dr-cache" load-query "$query" 2>/dev/null || echo '{"hit":false}')
+echo "$cache_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if d.get('hit'):
+    print(f'  Cache HIT — {len(d.get(\"urls\",[]))} cached URLs')
+else:
+    print('  Cache MISS — fresh search required')
+"
+
+# Step 3: Token estimation
+echo ""
+echo "[4] Cost Estimation"
+est_out=$("$PLUGIN_DIR/bin/dr-tokens" estimate --query "$query" --depth "$depth" 2>/dev/null)
+echo "$est_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+total_tokens = sum(p.get('est_input',0)+p.get('est_output',0) for p in d.get('breakdown',{}).values() if isinstance(p,dict))
+print(f'  Estimated tokens: {total_tokens:,}')
+print(f'  Estimated cost: \${d[\"estimated_total_cost_usd\"]:.3f}')
+print(f'  Batch API cost: \${d[\"estimated_batch_cost_usd\"]:.3f} (50% savings)')
+print(f'  Depth: {d.get(\"depth\", \"N/A\")}')
+"
+
+# Step 4: Knowledge check
+echo ""
+echo "[5] Knowledge Check"
+knowledge_out=$("$PLUGIN_DIR/bin/dr-knowledge" match --query "$query" 2>/dev/null || echo '{"matches":[]}')
+echo "$knowledge_out" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+matches = d.get('matches', [])
+if matches:
+    print(f'  Found {len(matches)} related topic(s):')
+    for m in matches[:3]:
+        print(f'    - {m.get(\"topic\",\"\")} (sim={m.get(\"similarity\",0):.2f})')
+else:
+    print('  No prior knowledge — first research on this topic')
+"
+
+echo ""
+echo "=== Dry Run Complete (no API calls made) ==="
+echo "To execute: /deep-research:research \"$query\" --depth $depth"

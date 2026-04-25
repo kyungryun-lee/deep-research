@@ -12,6 +12,7 @@ when_to_use: >
   Do NOT use for: simple factual questions, code writing, file editing.
 model: opus
 effort: high
+context: fork
 allowed-tools: Agent, Read, Write, Glob, Grep, Bash, WebSearch, WebFetch
 arguments:
   - name: query
@@ -28,7 +29,7 @@ arguments:
   - name: mode
     description: "research-only / full-pipeline (기본: research-only)"
     required: false
-argument-hint: "리서치 주제" [--depth deep] [--rubric poc] [--mode full-pipeline]
+argument-hint: "리서치 주제" [--depth deep] [--rubric poc] [--mode full-pipeline] [--dry-run]
 ---
 
 # Deep Research Orchestrator v2
@@ -39,6 +40,22 @@ argument-hint: "리서치 주제" [--depth deep] [--rubric poc] [--mode full-pip
 
 - **research-only** (기본): Phase 1-5만 실행 (리서치 + 보고서)
 - **full-pipeline**: Phase 1-8 전체 실행 (리서치 → 설계 → 적용 → 테스트 → 배포)
+
+## --dry-run 모드 (API 비용 없는 사전 검토)
+
+`--dry-run` 플래그가 있으면 **LLM 에이전트를 실행하지 않고** 아래만 수행합니다:
+
+```bash
+${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-run
+```
+
+출력:
+1. 쿼리 정규화 + 캐시 히트 여부
+2. 자동 분류 결과 (프로필, 복잡도, 예상 Worker 수)
+3. 예상 비용 (실시간 vs Batch API)
+4. 실제 실행에 필요한 명령어
+
+**dry-run은 API 비용을 발생시키지 않습니다.** 실제 리서치를 시작하기 전 비용을 확인할 때 사용합니다.
 
 ## 성능 규칙
 

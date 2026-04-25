@@ -104,7 +104,8 @@ def tfidf_vector(tokens):
     tf = Counter(tokens)
     vec = {}
     for t, count in tf.items():
-        idf = math.log((N + 1) / (df.get(t, 0) + 1))
+        # Use smoothed IDF that doesn't zero out common terms in small corpora
+        idf = math.log((N + 1) / (df.get(t, 0) + 0.5)) + 1.0
         vec[t] = count * idf
     return vec
 

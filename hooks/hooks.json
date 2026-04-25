@@ -2,30 +2,62 @@
   "hooks": {
     "SessionStart": [
       {
-        "type": "command",
-        "command": "mkdir -p \"${CLAUDE_PLUGIN_DATA}/memory\" \"${CLAUDE_PLUGIN_DATA}/cache\" \"${CLAUDE_PLUGIN_DATA}/cache/worker-results\" \"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\" 2>/dev/null; echo '{\"additionalContext\": \"Deep Research v2.5 loaded. Cache: '\"${CLAUDE_PLUGIN_DATA}\"'/cache/\"}'",
-        "timeout": 10
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p \"${CLAUDE_PLUGIN_DATA}/memory\" \"${CLAUDE_PLUGIN_DATA}/cache\" \"${CLAUDE_PLUGIN_DATA}/cache/worker-results\" \"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\" 2>/dev/null; python3 --version >/dev/null 2>&1 || echo '[DR WARN] python3 not found — dr-tokens/dr-score will fail' >&2; echo '{\"additionalContext\": \"Deep Research v2.5 loaded. Cache: '\"${CLAUDE_PLUGIN_DATA}\"'/cache/ | Use /deep-research:research \\\"query\\\" to start. Add --dry-run to estimate cost without running.\"}'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "KNOWLEDGE_DIR=\"${CLAUDE_PLUGIN_DATA}/knowledge\"; if [ -d \"$KNOWLEDGE_DIR\" ]; then SUMMARY=$(ls \"$KNOWLEDGE_DIR\"/*.json 2>/dev/null | head -5 | xargs -I{} python3 -c \"import json,sys; d=json.load(open(sys.argv[1])); print(d.get('topic',''))\" {} 2>/dev/null | tr '\\n' ', ' | sed 's/, $//'); if [ -n \"$SUMMARY\" ]; then echo \"{\\\"additionalContext\\\": \\\"[DR Knowledge] Cached topics: $SUMMARY — dr-knowledge match may find relevant prior research\\\"}\"; exit 0; fi; fi; echo '{\"suppressOutput\": true}'",
+            "timeout": 8
+          }
+        ]
       }
     ],
     "PreCompact": [
       {
-        "type": "command",
-        "command": "echo '{\"additionalContext\": \"[DR] Compaction: research plan and evaluation state are cached at '\"${CLAUDE_PLUGIN_DATA}\"'/cache/. Use dr-cache restore after compaction.\"}'",
-        "timeout": 5
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"additionalContext\": \"[DR] Compaction: research plan and evaluation state are cached at '\"${CLAUDE_PLUGIN_DATA}\"'/cache/. Use dr-cache restore after compaction.\"}'",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStop": [
       {
-        "type": "command",
-        "command": "echo '{\"suppressOutput\": true}'",
-        "timeout": 5
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"suppressOutput\": true}'",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "type": "command",
-        "command": "if [ \"$TOOL_NAME\" = 'WebFetch' ] || [ \"$TOOL_NAME\" = 'WebSearch' ]; then CACHE_DIR=\"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\"; HASH=$(echo \"$TOOL_INPUT\" | md5sum | cut -c1-12); echo \"$TOOL_OUTPUT\" > \"$CACHE_DIR/$HASH.txt\" 2>/dev/null; fi; echo '{\"suppressOutput\": true}'",
-        "timeout": 5
+        "matcher": "WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CACHE_DIR=\"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\"; HASH=$(echo \"$TOOL_INPUT\" | md5sum | cut -c1-12); echo \"$TOOL_OUTPUT\" > \"$CACHE_DIR/$HASH.txt\" 2>/dev/null; echo '{\"suppressOutput\": true}'",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

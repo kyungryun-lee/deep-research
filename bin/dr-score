@@ -107,9 +107,12 @@ if not weights:
         "context": {"proven": 0.20, "actionability": 0.20, "efficiency": 0.10, "env_fit": 0.10}
     }
 
-# Flatten weights
+# Flatten weights (skip non-dimension keys)
+SKIP_KEYS = {'sea_threshold', 'hard_floor'}
 flat_weights = {}
-for category in weights.values():
+for key, category in weights.items():
+    if key in SKIP_KEYS:
+        continue
     if isinstance(category, dict):
         for dim, w in category.items():
             if isinstance(w, (int, float)):

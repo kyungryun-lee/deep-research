@@ -5,6 +5,8 @@
 CACHE_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/cache"
 PLAN_DIR="$CACHE_DIR/plans"
 WORKER_DIR="$CACHE_DIR/worker-results"
+QUERY_DIR="$CACHE_DIR/query-results"
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
     echo "Deep Research Cache CLI"
@@ -12,22 +14,276 @@ usage() {
     echo "Usage: dr-cache <command> [args]"
     echo ""
     echo "Commands:"
-    echo "  warmup          Load recent plan cache summary"
-    echo "  save-plan       Save current research plan (stdin JSON)"
-    echo "  load-plan KEY   Load cached plan by key"
-    echo "  save-result ID  Save worker result (stdin)"
-    echo "  load-result ID  Load cached worker result"
-    echo "  stats           Show cache statistics"
-    echo "  clean           Remove expired entries (default: 7 days)"
-    echo "  help            Show this help"
+    echo "  warmup              Load recent plan cache summary"
+    echo "  save-plan           Save current research plan (stdin JSON)"
+    echo "  load-plan KEY       Load cached plan by key"
+    echo "  save-result ID      Save worker result (stdin)"
+    echo "  load-result ID      Load cached worker result"
+    echo "  save-query \"query\"    Save worker results by normalized query (stdin)"
+    echo "  load-query \"query\"    Load cached results for a query (returns URLs + findings)"
+    echo "  semantic-match \"q\"    Find semantically similar cached queries (TF-IDF cosine)"
+    echo "  query-stats           Show query cache hit potential"
+    echo "  stats               Show cache statistics"
+    echo "  clean               Remove expired entries (default: 7 days)"
+    echo "  help                Show this help"
 }
 
 cache_key() {
     echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | head -c 100 | md5sum | cut -c1-12
 }
 
+cmd_save_query() {
+    mkdir -p "$QUERY_DIR" 2>/dev/null
+    local query="${1:-unnamed}"
+    local key
+    key=$("$PLUGIN_DIR/bin/dr-normalize" cache-key "$query" 2>/dev/null || echo "$query" | md5sum | cut -c1-12)
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" "$QUERY_DIR/${key}.json" "$query" "$key" << 'PYEOF'
+import json, sys, re
+from datetime import datetime
+from urllib.parse import urlparse
+
+tmpfile, outpath, query, cache_key = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+with open(tmpfile) as f:
+    content = f.read()
+
+# Extract URLs from findings
+url_pattern = r'https?://[^\s\)\]\>\"\'，、）]+'
+urls = list(set(re.findall(url_pattern, content)))
+
+# Normalize URLs
+normalized_urls = set()
+for u in urls:
+    u = u.rstrip('.,;:!?')
+    try:
+        parsed = urlparse(u)
+        netloc = parsed.netloc.replace('www.', '').lower()
+        path = parsed.path.rstrip('/')
+        normalized_urls.add(f"{netloc}{path}")
+    except:
+        normalized_urls.add(u)
+
+cache_entry = {
+    "query": query,
+    "cache_key": cache_key,
+    "cached_at": datetime.now().isoformat(),
+    "urls": urls[:100],  # limit stored URLs
+    "normalized_urls": sorted(normalized_urls)[:100],
+    "findings_length": len(content),
+    "findings_preview": content[:500]
+}
+
+with open(outpath, 'w') as f:
+    json.dump(cache_entry, f, ensure_ascii=False, indent=2)
+
+# Also save full findings
+with open(outpath.replace('.json', '.findings.txt'), 'w') as f:
+    f.write(content)
+
+print(json.dumps({
+    "status": "saved",
+    "cache_key": cache_key,
+    "urls_cached": len(urls),
+    "findings_size": len(content)
+}))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_load_query() {
+    local query="${1:-}"
+    [[ -z "$query" ]] && { echo '{"hit":false,"reason":"no query provided"}'; return 0; }
+
+    local key
+    key=$("$PLUGIN_DIR/bin/dr-normalize" cache-key "$query" 2>/dev/null || echo "$query" | md5sum | cut -c1-12)
+    local cache_file="$QUERY_DIR/${key}.json"
+
+    if [ ! -f "$cache_file" ]; then
+        echo '{"hit":false,"cache_key":"'"$key"'","reason":"no cache entry"}'
+        return 0
+    fi
+
+    # Check TTL (24 hours)
+    python3 - "$cache_file" << 'PYEOF'
+import json, sys, os
+from datetime import datetime, timedelta
+
+cache_file = sys.argv[1]
+with open(cache_file) as f:
+    data = json.load(f)
+
+cached_at = datetime.fromisoformat(data["cached_at"])
+ttl_hours = 24
+if datetime.now() - cached_at > timedelta(hours=ttl_hours):
+    print(json.dumps({"hit": False, "reason": "expired", "cached_at": data["cached_at"], "ttl_hours": ttl_hours}))
+    sys.exit(0)
+
+# Load full findings if available
+findings_file = cache_file.replace('.json', '.findings.txt')
+findings = ""
+if os.path.exists(findings_file):
+    with open(findings_file) as f:
+        findings = f.read()
+
+data["hit"] = True
+data["findings"] = findings
+data["age_minutes"] = round((datetime.now() - cached_at).total_seconds() / 60, 1)
+
+print(json.dumps(data, ensure_ascii=False))
+PYEOF
+}
+
+cmd_query_stats() {
+    mkdir -p "$QUERY_DIR" 2>/dev/null
+    python3 - "$QUERY_DIR" << 'PYEOF'
+import json, sys, os
+from datetime import datetime, timedelta
+
+qdir = sys.argv[1]
+entries = []
+expired = 0
+active = 0
+
+for f in sorted(os.listdir(qdir)):
+    if not f.endswith('.json'):
+        continue
+    path = os.path.join(qdir, f)
+    with open(path) as fh:
+        data = json.load(fh)
+    cached_at = datetime.fromisoformat(data["cached_at"])
+    age_hours = (datetime.now() - cached_at).total_seconds() / 3600
+    is_active = age_hours <= 24
+    if is_active:
+        active += 1
+    else:
+        expired += 1
+    entries.append({
+        "cache_key": data["cache_key"],
+        "query": data["query"][:60],
+        "urls": len(data.get("urls", [])),
+        "age_hours": round(age_hours, 1),
+        "active": is_active
+    })
+
+print(json.dumps({
+    "total": len(entries),
+    "active": active,
+    "expired": expired,
+    "entries": entries
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_semantic_match() {
+    local query="${1:-}"
+    local threshold="${2:-0.5}"
+    [[ -z "$query" ]] && { echo '{"hit":false,"reason":"no query"}'; return 0; }
+
+    mkdir -p "$QUERY_DIR" 2>/dev/null
+
+    python3 - "$QUERY_DIR" "$query" "$threshold" << 'PYEOF'
+import json, sys, os, re, math
+from collections import Counter
+from datetime import datetime, timedelta
+
+qdir, query, threshold = sys.argv[1], sys.argv[2], float(sys.argv[3])
+
+STOPWORDS = {
+    'the','a','an','is','are','was','were','be','been','being',
+    'have','has','had','do','does','did','will','would','could',
+    'should','may','might','can','to','of','in','for','on','with',
+    'at','by','from','as','and','but','or','not','so','if','that',
+    'this','it','its','what','which','who','how','about','into',
+}
+
+def tokenize(text):
+    tokens = re.findall(r'[a-z0-9가-힣]+', text.lower())
+    return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
+
+def cosine(a, b):
+    if not a or not b:
+        return 0.0
+    ca, cb = Counter(a), Counter(b)
+    vocab = set(ca) | set(cb)
+    dot = sum(ca.get(w,0) * cb.get(w,0) for w in vocab)
+    ma = math.sqrt(sum(v**2 for v in ca.values()))
+    mb = math.sqrt(sum(v**2 for v in cb.values()))
+    return dot / (ma * mb) if ma and mb else 0.0
+
+query_tokens = tokenize(query)
+matches = []
+
+for f in os.listdir(qdir):
+    if not f.endswith('.json') or f.endswith('-results.json'):
+        continue
+    path = os.path.join(qdir, f)
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except:
+        continue
+
+    # Check TTL (24h)
+    cached_at = datetime.fromisoformat(data.get("cached_at", "2000-01-01"))
+    if datetime.now() - cached_at > timedelta(hours=24):
+        continue
+
+    cached_query = data.get("query", "")
+    sim = cosine(query_tokens, tokenize(cached_query))
+
+    if sim >= threshold:
+        matches.append({
+            "cache_key": data.get("cache_key"),
+            "query": cached_query,
+            "similarity": round(sim, 3),
+            "urls_count": len(data.get("urls", [])),
+            "age_minutes": round((datetime.now() - cached_at).total_seconds() / 60, 1)
+        })
+
+matches.sort(key=lambda x: -x["similarity"])
+
+if matches:
+    best = matches[0]
+    # Load findings from best match
+    findings_path = os.path.join(qdir, f"{best['cache_key']}.findings.txt")
+    findings = ""
+    if os.path.exists(findings_path):
+        with open(findings_path) as fh:
+            findings = fh.read()
+
+    # Load URLs
+    cache_path = os.path.join(qdir, f"{best['cache_key']}.json")
+    urls = []
+    if os.path.exists(cache_path):
+        with open(cache_path) as fh:
+            urls = json.load(fh).get("urls", [])
+
+    print(json.dumps({
+        "hit": True,
+        "type": "semantic",
+        "best_match": best,
+        "all_matches": matches[:5],
+        "urls": urls,
+        "findings": findings,
+        "findings_length": len(findings)
+    }, ensure_ascii=False))
+else:
+    print(json.dumps({
+        "hit": False,
+        "type": "semantic",
+        "query": query,
+        "threshold": threshold,
+        "checked": len(os.listdir(qdir))
+    }))
+PYEOF
+}
+
 cmd_warmup() {
-    mkdir -p "$PLAN_DIR" "$WORKER_DIR" 2>/dev/null
+    mkdir -p "$PLAN_DIR" "$WORKER_DIR" "$QUERY_DIR" 2>/dev/null
     local count=$(find "$PLAN_DIR" -name "*.json" -mtime -7 2>/dev/null | wc -l)
     if [ "$count" -gt 0 ]; then
         echo "Plan cache: $count recent entries available"
@@ -76,14 +332,21 @@ cmd_stats() {
     echo "==============================="
     local plan_count=$(find "$PLAN_DIR" -name "*.json" 2>/dev/null | wc -l)
     local result_count=$(find "$WORKER_DIR" -name "*.txt" 2>/dev/null | wc -l)
+    local query_count=$(find "$QUERY_DIR" -name "*.json" 2>/dev/null | wc -l)
     local total_size=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1)
     echo "Plan cache:   $plan_count entries"
     echo "Worker cache: $result_count entries"
+    echo "Query cache:  $query_count entries"
     echo "Total size:   ${total_size:-0}"
     echo ""
     if [ "$plan_count" -gt 0 ]; then
         echo "Recent plans:"
         find "$PLAN_DIR" -name "*.json" -mtime -7 -printf "  %T+ %f\n" 2>/dev/null | sort -r | head -5
+    fi
+    if [ "$query_count" -gt 0 ]; then
+        echo ""
+        echo "Recent query cache:"
+        find "$QUERY_DIR" -name "*.json" -mtime -1 -printf "  %T+ %f\n" 2>/dev/null | sort -r | head -5
     fi
 }
 
@@ -91,11 +354,16 @@ cmd_clean() {
     local days="${1:-7}"
     local before_plan=$(find "$PLAN_DIR" -name "*.json" 2>/dev/null | wc -l)
     local before_result=$(find "$WORKER_DIR" -name "*.txt" 2>/dev/null | wc -l)
+    local before_query=$(find "$QUERY_DIR" -name "*.json" -o -name "*.txt" 2>/dev/null | wc -l)
     find "$PLAN_DIR" -name "*.json" -mtime +"$days" -delete 2>/dev/null
     find "$WORKER_DIR" -name "*.txt" -mtime +"$days" -delete 2>/dev/null
+    # Query cache uses shorter TTL (1 day for json, findings follow)
+    find "$QUERY_DIR" -name "*.json" -mtime +1 -delete 2>/dev/null
+    find "$QUERY_DIR" -name "*.findings.txt" -mtime +1 -delete 2>/dev/null
     local after_plan=$(find "$PLAN_DIR" -name "*.json" 2>/dev/null | wc -l)
     local after_result=$(find "$WORKER_DIR" -name "*.txt" 2>/dev/null | wc -l)
-    echo "Cleaned: plans $((before_plan - after_plan)), results $((before_result - after_result)) (older than ${days} days)"
+    local after_query=$(find "$QUERY_DIR" -name "*.json" -o -name "*.txt" 2>/dev/null | wc -l)
+    echo "Cleaned: plans $((before_plan - after_plan)), results $((before_result - after_result)), queries $((before_query - after_query))"
 }
 
 case "${1:-help}" in
@@ -104,7 +372,11 @@ case "${1:-help}" in
     load-plan)   cmd_load_plan "$2" ;;
     save-result) cmd_save_result "$2" ;;
     load-result) cmd_load_result "$2" ;;
-    stats)       cmd_stats ;;
+    save-query)      cmd_save_query "$2" ;;
+    load-query)      cmd_load_query "$2" ;;
+    semantic-match)  cmd_semantic_match "$2" "${3:-0.5}" ;;
+    query-stats)     cmd_query_stats ;;
+    stats)           cmd_stats ;;
     clean)       cmd_clean "$2" ;;
     help)        usage ;;
     *)           usage ;;

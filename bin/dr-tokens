@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+# Deep Research Token Usage Dashboard
+# Tracks and reports token usage per phase for cost optimization
+# Reads from execution logs and provides per-session analytics
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+DATA_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}"
+TOKEN_DIR="$DATA_DIR/tokens"
+
+usage() {
+    cat <<'EOF'
+Deep Research Token Dashboard
+
+Usage: dr-tokens <command> [args]
+
+Commands:
+  record --phase <name> --input <n> --output <n> [--model <m>] [--session <id>]
+                              Record token usage for a phase
+  report [--session <id>]     Show token usage report (default: latest session)
+  history [--last <n>]        Show usage history across sessions (default: 10)
+  estimate --query "query" --depth <d>
+                              Estimate token cost before running research
+  budget --max-cost <usd>     Check if research fits within budget
+  compare --s1 <id> --s2 <id> Compare token usage between sessions
+  help                        Show this help
+
+Pricing (per 1M tokens):
+  opus   input: $15  output: $75  (batch: $7.50/$37.50)
+  sonnet input: $3   output: $15  (batch: $1.50/$7.50)
+  haiku  input: $1   output: $5   (batch: $0.50/$2.50)
+EOF
+}
+
+cmd_record() {
+    local phase="" input_tokens=0 output_tokens=0 model="sonnet" session=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --phase) phase="$2"; shift 2 ;;
+            --input) input_tokens="$2"; shift 2 ;;
+            --output) output_tokens="$2"; shift 2 ;;
+            --model) model="$2"; shift 2 ;;
+            --session) session="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [[ -z "$phase" ]] && { echo '{"error":"--phase required"}'; return 1; }
+    [[ -z "$session" ]] && session=$(date +%Y%m%d-%H%M)
+
+    mkdir -p "$TOKEN_DIR" 2>/dev/null
+
+    python3 << PYEOF
+import json
+from datetime import datetime
+
+PRICING = {
+    "opus":   {"input": 15.0,  "output": 75.0,  "batch_input": 7.5,   "batch_output": 37.5},
+    "sonnet": {"input": 3.0,   "output": 15.0,  "batch_input": 1.5,   "batch_output": 7.5},
+    "haiku":  {"input": 1.0,   "output": 5.0,   "batch_input": 0.5,   "batch_output": 2.5},
+}
+
+phase = "$phase"
+input_t = int("$input_tokens")
+output_t = int("$output_tokens")
+model = "$model"
+session = "$session"
+
+prices = PRICING.get(model, PRICING["sonnet"])
+cost_input = input_t / 1_000_000 * prices["input"]
+cost_output = output_t / 1_000_000 * prices["output"]
+cost_total = cost_input + cost_output
+batch_cost = input_t / 1_000_000 * prices["batch_input"] + output_t / 1_000_000 * prices["batch_output"]
+
+entry = {
+    "timestamp": datetime.now().isoformat(),
+    "session": session,
+    "phase": phase,
+    "model": model,
+    "input_tokens": input_t,
+    "output_tokens": output_t,
+    "total_tokens": input_t + output_t,
+    "cost_usd": round(cost_total, 4),
+    "batch_cost_usd": round(batch_cost, 4),
+    "savings_if_batch": round(cost_total - batch_cost, 4)
+}
+
+log_path = "$TOKEN_DIR/usage.jsonl"
+with open(log_path, "a") as f:
+    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+print(json.dumps(entry, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_report() {
+    local session=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --session) session="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    python3 - "$TOKEN_DIR/usage.jsonl" "$session" << 'PYEOF'
+import json, sys, os
+
+log_path, target_session = sys.argv[1], sys.argv[2]
+
+if not os.path.exists(log_path):
+    print(json.dumps({"error": "No usage data yet. Use 'dr-tokens record' to start tracking."}))
+    sys.exit(0)
+
+entries = []
+with open(log_path) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            entries.append(json.loads(line))
+
+if not entries:
+    print(json.dumps({"error": "No usage data found"}))
+    sys.exit(0)
+
+# Get target session (default: latest)
+sessions = sorted(set(e["session"] for e in entries))
+if target_session:
+    session_entries = [e for e in entries if e["session"] == target_session]
+else:
+    target_session = sessions[-1]
+    session_entries = [e for e in entries if e["session"] == target_session]
+
+if not session_entries:
+    print(json.dumps({"error": f"Session '{target_session}' not found", "available": sessions}))
+    sys.exit(0)
+
+# Aggregate by phase
+phases = {}
+for e in session_entries:
+    p = e["phase"]
+    if p not in phases:
+        phases[p] = {"input": 0, "output": 0, "cost": 0, "batch_cost": 0, "calls": 0, "models": set()}
+    phases[p]["input"] += e["input_tokens"]
+    phases[p]["output"] += e["output_tokens"]
+    phases[p]["cost"] += e["cost_usd"]
+    phases[p]["batch_cost"] += e["batch_cost_usd"]
+    phases[p]["calls"] += 1
+    phases[p]["models"].add(e["model"])
+
+# Aggregate by model
+models = {}
+for e in session_entries:
+    m = e["model"]
+    if m not in models:
+        models[m] = {"input": 0, "output": 0, "cost": 0, "calls": 0}
+    models[m]["input"] += e["input_tokens"]
+    models[m]["output"] += e["output_tokens"]
+    models[m]["cost"] += e["cost_usd"]
+    models[m]["calls"] += 1
+
+total_input = sum(e["input_tokens"] for e in session_entries)
+total_output = sum(e["output_tokens"] for e in session_entries)
+total_cost = sum(e["cost_usd"] for e in session_entries)
+total_batch_cost = sum(e["batch_cost_usd"] for e in session_entries)
+
+report = {
+    "session": target_session,
+    "total": {
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "total_tokens": total_input + total_output,
+        "cost_usd": round(total_cost, 4),
+        "batch_cost_usd": round(total_batch_cost, 4),
+        "potential_savings_usd": round(total_cost - total_batch_cost, 4),
+        "potential_savings_pct": round((1 - total_batch_cost / total_cost) * 100, 1) if total_cost > 0 else 0
+    },
+    "by_phase": {
+        p: {
+            "input_tokens": d["input"],
+            "output_tokens": d["output"],
+            "cost_usd": round(d["cost"], 4),
+            "batch_cost_usd": round(d["batch_cost"], 4),
+            "calls": d["calls"],
+            "models": sorted(d["models"]),
+            "pct_of_total": round(d["cost"] / total_cost * 100, 1) if total_cost > 0 else 0
+        }
+        for p, d in sorted(phases.items(), key=lambda x: -x[1]["cost"])
+    },
+    "by_model": {
+        m: {
+            "input_tokens": d["input"],
+            "output_tokens": d["output"],
+            "cost_usd": round(d["cost"], 4),
+            "calls": d["calls"],
+            "pct_of_total": round(d["cost"] / total_cost * 100, 1) if total_cost > 0 else 0
+        }
+        for m, d in sorted(models.items(), key=lambda x: -x[1]["cost"])
+    },
+    "optimization_hints": []
+}
+
+# Generate optimization hints
+most_expensive_phase = max(phases.items(), key=lambda x: x[1]["cost"])
+if most_expensive_phase[1]["cost"] > total_cost * 0.4:
+    report["optimization_hints"].append(
+        f"{most_expensive_phase[0]} accounts for {round(most_expensive_phase[1]['cost']/total_cost*100)}% of cost — consider batch API or model downgrade"
+    )
+
+for p, d in phases.items():
+    if d["output"] > d["input"] * 3:
+        report["optimization_hints"].append(
+            f"{p}: output/input ratio is {d['output']/d['input']:.1f}x — consider constraining output length"
+        )
+
+if total_cost > 1.0:
+    report["optimization_hints"].append(
+        f"Batch API would save ${round(total_cost - total_batch_cost, 2)} ({report['total']['potential_savings_pct']}%)"
+    )
+
+print(json.dumps(report, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_history() {
+    local last=10
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --last) last="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    python3 - "$TOKEN_DIR/usage.jsonl" "$last" << 'PYEOF'
+import json, sys, os
+
+log_path, limit = sys.argv[1], int(sys.argv[2])
+
+if not os.path.exists(log_path):
+    print(json.dumps({"sessions": [], "message": "No usage history yet"}))
+    sys.exit(0)
+
+entries = []
+with open(log_path) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            entries.append(json.loads(line))
+
+sessions = {}
+for e in entries:
+    s = e["session"]
+    if s not in sessions:
+        sessions[s] = {"input": 0, "output": 0, "cost": 0, "phases": 0, "models": set()}
+    sessions[s]["input"] += e["input_tokens"]
+    sessions[s]["output"] += e["output_tokens"]
+    sessions[s]["cost"] += e["cost_usd"]
+    sessions[s]["phases"] += 1
+    sessions[s]["models"].add(e["model"])
+
+result = []
+for sid in sorted(sessions.keys(), reverse=True)[:limit]:
+    d = sessions[sid]
+    result.append({
+        "session": sid,
+        "total_tokens": d["input"] + d["output"],
+        "cost_usd": round(d["cost"], 4),
+        "phases": d["phases"],
+        "models": sorted(d["models"])
+    })
+
+print(json.dumps({"sessions": result, "total_sessions": len(sessions)}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_estimate() {
+    local query="" depth="standard"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --query) query="$2"; shift 2 ;;
+            --depth) depth="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    python3 << PYEOF
+import json
+
+DEPTH_MULTIPLIER = {"surface": 0.5, "standard": 1.0, "deep": 2.0}
+depth = "$depth"
+mult = DEPTH_MULTIPLIER.get(depth, 1.0)
+
+# Estimated tokens per phase (based on typical research runs)
+phases = {
+    "planner":     {"model": "sonnet", "input": int(5000 * mult),  "output": int(2000 * mult)},
+    "workers":     {"model": "sonnet", "input": int(30000 * mult), "output": int(15000 * mult)},
+    "evaluator":   {"model": "opus",   "input": int(20000 * mult), "output": int(5000 * mult)},
+    "synthesizer": {"model": "opus",   "input": int(25000 * mult), "output": int(10000 * mult)},
+    "supplement":  {"model": "sonnet", "input": int(10000 * mult), "output": int(5000 * mult)},
+}
+
+PRICING = {
+    "opus":   {"input": 15.0, "output": 75.0},
+    "sonnet": {"input": 3.0,  "output": 15.0},
+}
+
+total_cost = 0
+breakdown = {}
+for phase, info in phases.items():
+    prices = PRICING[info["model"]]
+    cost = info["input"] / 1e6 * prices["input"] + info["output"] / 1e6 * prices["output"]
+    total_cost += cost
+    breakdown[phase] = {
+        "model": info["model"],
+        "est_input": info["input"],
+        "est_output": info["output"],
+        "est_cost_usd": round(cost, 4)
+    }
+
+print(json.dumps({
+    "depth": depth,
+    "estimated_total_cost_usd": round(total_cost, 4),
+    "estimated_batch_cost_usd": round(total_cost * 0.5, 4),
+    "breakdown": breakdown,
+    "note": "Estimates based on typical research runs. Actual usage varies by topic complexity."
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_budget() {
+    local max_cost=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --max-cost) max_cost="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    python3 - "$TOKEN_DIR/usage.jsonl" "$max_cost" << 'PYEOF'
+import json, sys, os
+
+log_path, max_cost = sys.argv[1], float(sys.argv[2])
+
+if not os.path.exists(log_path):
+    print(json.dumps({"within_budget": True, "spent": 0, "remaining": max_cost, "message": "No usage yet"}))
+    sys.exit(0)
+
+total = 0
+with open(log_path) as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            total += json.loads(line).get("cost_usd", 0)
+
+remaining = max_cost - total
+print(json.dumps({
+    "within_budget": remaining > 0,
+    "max_cost_usd": max_cost,
+    "spent_usd": round(total, 4),
+    "remaining_usd": round(remaining, 4),
+    "usage_pct": round(total / max_cost * 100, 1) if max_cost > 0 else 0
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+cmd_compare() {
+    local s1="" s2=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --s1) s1="$2"; shift 2 ;;
+            --s2) s2="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [[ -z "$s1" || -z "$s2" ]] && { echo '{"error":"--s1 and --s2 required"}'; return 1; }
+
+    python3 - "$TOKEN_DIR/usage.jsonl" "$s1" "$s2" << 'PYEOF'
+import json, sys, os
+
+log_path, s1, s2 = sys.argv[1], sys.argv[2], sys.argv[3]
+
+if not os.path.exists(log_path):
+    print(json.dumps({"error": "No usage data"}))
+    sys.exit(0)
+
+entries = []
+with open(log_path) as f:
+    for line in f:
+        if line.strip():
+            entries.append(json.loads(line.strip()))
+
+def session_summary(entries, sid):
+    se = [e for e in entries if e["session"] == sid]
+    if not se:
+        return None
+    return {
+        "session": sid,
+        "total_tokens": sum(e["input_tokens"] + e["output_tokens"] for e in se),
+        "cost_usd": round(sum(e["cost_usd"] for e in se), 4),
+        "phases": len(se),
+        "input_tokens": sum(e["input_tokens"] for e in se),
+        "output_tokens": sum(e["output_tokens"] for e in se),
+    }
+
+sum1 = session_summary(entries, s1)
+sum2 = session_summary(entries, s2)
+
+if not sum1 or not sum2:
+    print(json.dumps({"error": "One or both sessions not found"}))
+    sys.exit(0)
+
+diff = {
+    "tokens_delta": sum2["total_tokens"] - sum1["total_tokens"],
+    "cost_delta_usd": round(sum2["cost_usd"] - sum1["cost_usd"], 4),
+    "cost_change_pct": round((sum2["cost_usd"] - sum1["cost_usd"]) / sum1["cost_usd"] * 100, 1) if sum1["cost_usd"] > 0 else 0
+}
+
+print(json.dumps({"session_1": sum1, "session_2": sum2, "delta": diff}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
+case "${1:-help}" in
+    record)   shift; cmd_record "$@" ;;
+    report)   shift; cmd_report "$@" ;;
+    history)  shift; cmd_history "$@" ;;
+    estimate) shift; cmd_estimate "$@" ;;
+    budget)   shift; cmd_budget "$@" ;;
+    compare)  shift; cmd_compare "$@" ;;
+    help)     usage ;;
+    *)        usage ;;
+esac

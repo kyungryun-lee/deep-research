@@ -202,9 +202,69 @@ else
     fail "Worker missing anchor source handling"
 fi
 
-# --- 10. Extended Harness Scripts ---
+# --- 10. Query Normalization & Cache ---
 echo ""
-echo "[10] Extended Harness Scripts"
+echo "[10] Query Normalization & Cache"
+[ -x "$PLUGIN_DIR/bin/dr-normalize" ] && pass "dr-normalize is executable" || fail "dr-normalize not executable"
+
+# dr-normalize basic test
+NORM_OUT=$("$PLUGIN_DIR/bin/dr-normalize" normalize "Best LLM Frameworks vs Libraries 2026" 2>/dev/null)
+echo "$NORM_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'cache_key' in d and len(d['cache_key'])==12
+assert 'normalized' in d
+assert d['tokens'] == sorted(d['tokens']), 'tokens should be sorted'
+" 2>/dev/null && pass "dr-normalize produces sorted tokens + cache key" || fail "dr-normalize output invalid"
+
+# dr-normalize synonym mapping
+NORM_SYN=$("$PLUGIN_DIR/bin/dr-normalize" normalize "comparing React vs Vue tutorials" 2>/dev/null)
+echo "$NORM_SYN" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+# 'comparing' → 'compare', 'vs' → 'versus', 'tutorials' → 'guide'
+assert 'compare' in d['tokens'], f'expected compare: {d[\"tokens\"]}'
+assert 'versus' in d['tokens'], f'expected versus: {d[\"tokens\"]}'
+assert 'guide' in d['tokens'], f'expected guide: {d[\"tokens\"]}'
+assert 'comparing' not in d['tokens']
+assert 'vs' not in d['tokens']
+" 2>/dev/null && pass "dr-normalize synonym mapping works" || fail "dr-normalize synonyms failed"
+
+# dr-normalize similar test
+SIM_OUT=$("$PLUGIN_DIR/bin/dr-normalize" similar "React vs Vue comparison" "Vue vs React compare" 2>/dev/null)
+echo "$SIM_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['similar']==True and d['cosine']>0.5" 2>/dev/null && pass "dr-normalize similar detection works" || fail "dr-normalize similar failed"
+
+# dr-normalize cache key stability (same query → same key)
+KEY1=$("$PLUGIN_DIR/bin/dr-normalize" cache-key "Best LLM frameworks" 2>/dev/null)
+KEY2=$("$PLUGIN_DIR/bin/dr-normalize" cache-key "best llm frameworks" 2>/dev/null)
+[ "$KEY1" = "$KEY2" ] && pass "dr-normalize cache key is case-insensitive" || fail "dr-normalize cache key not stable ($KEY1 vs $KEY2)"
+
+# dr-cache save-query / load-query test
+TEST_QUERY="__test_cache_$(date +%s)"
+echo "Test findings with https://example.com/test and https://docs.python.org" | "$PLUGIN_DIR/bin/dr-cache" save-query "$TEST_QUERY" > /dev/null 2>&1
+CACHE_LOAD=$("$PLUGIN_DIR/bin/dr-cache" load-query "$TEST_QUERY" 2>/dev/null)
+echo "$CACHE_LOAD" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('hit')==True, f'expected hit: {d}'
+assert len(d.get('urls',[])) >= 2, f'expected 2+ urls: {d.get(\"urls\")}'
+" 2>/dev/null && pass "dr-cache save-query/load-query works" || fail "dr-cache query cache failed"
+
+# Cleanup test cache
+TEST_CACHE_KEY=$("$PLUGIN_DIR/bin/dr-normalize" cache-key "$TEST_QUERY" 2>/dev/null)
+rm -f "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/cache/query-results/${TEST_CACHE_KEY}.json" 2>/dev/null
+rm -f "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/cache/query-results/${TEST_CACHE_KEY}.findings.txt" 2>/dev/null
+
+# SKILL.md has query normalization
+if grep -q "쿼리 정규화" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has query normalization phase"
+else
+    fail "SKILL.md missing query normalization"
+fi
+
+# --- 11. Extended Harness Scripts ---
+echo ""
+echo "[11] Extended Harness Scripts"
 
 # dr-score diversity test
 DIV_OUT=$(echo '["https://a.com","https://b.com","https://a.com/page"]' | "$PLUGIN_DIR/bin/dr-score" diversity 2>/dev/null)
@@ -250,6 +310,82 @@ if grep -q "code_metrics" "$PLUGIN_DIR/skills/research/SKILL.md"; then
     pass "SKILL.md has code_metrics integration"
 else
     fail "SKILL.md missing code_metrics"
+fi
+
+# --- 12. Phase C: Advanced Optimization ---
+echo ""
+echo "[12] Phase C: Advanced Optimization"
+
+# dr-tokens executable
+[ -x "$PLUGIN_DIR/bin/dr-tokens" ] && pass "dr-tokens is executable" || fail "dr-tokens not executable"
+
+# dr-tokens record + report test
+TEST_SESSION="__test_$(date +%s)"
+"$PLUGIN_DIR/bin/dr-tokens" record --phase "planner" --input 5000 --output 2000 --model sonnet --session "$TEST_SESSION" > /dev/null 2>&1
+"$PLUGIN_DIR/bin/dr-tokens" record --phase "evaluator" --input 20000 --output 5000 --model opus --session "$TEST_SESSION" > /dev/null 2>&1
+TOKEN_REPORT=$("$PLUGIN_DIR/bin/dr-tokens" report --session "$TEST_SESSION" 2>/dev/null)
+echo "$TOKEN_REPORT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['session']=='$TEST_SESSION'
+assert d['total']['input_tokens']==25000
+assert d['total']['output_tokens']==7000
+assert d['total']['potential_savings_pct']==50.0
+assert 'planner' in d['by_phase'] and 'evaluator' in d['by_phase']
+" 2>/dev/null && pass "dr-tokens record+report works" || fail "dr-tokens record+report failed"
+
+# dr-tokens estimate test
+EST_OUT=$("$PLUGIN_DIR/bin/dr-tokens" estimate --query "test" --depth standard 2>/dev/null)
+echo "$EST_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['depth']=='standard'
+assert d['estimated_total_cost_usd'] > 0
+assert d['estimated_batch_cost_usd'] < d['estimated_total_cost_usd']
+" 2>/dev/null && pass "dr-tokens estimate works" || fail "dr-tokens estimate failed"
+
+# Cleanup test token data
+sed -i "/$TEST_SESSION/d" "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/tokens/usage.jsonl" 2>/dev/null || true
+
+# dr-batch executable
+[ -x "$PLUGIN_DIR/bin/dr-batch" ] && pass "dr-batch is executable" || fail "dr-batch not executable"
+
+# dr-batch list test (no API key needed)
+BATCH_LIST=$("$PLUGIN_DIR/bin/dr-batch" list 2>/dev/null)
+echo "$BATCH_LIST" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'total' in d" 2>/dev/null && pass "dr-batch list works" || fail "dr-batch list failed"
+
+# dr-cache semantic-match test
+# First save a cache entry
+echo "Findings about LLM plugins https://example.com/llm https://docs.anthropic.com" | "$PLUGIN_DIR/bin/dr-cache" save-query "LLM plugin architecture" > /dev/null 2>&1
+SEM_OUT=$("$PLUGIN_DIR/bin/dr-cache" semantic-match "plugin architecture for language models" 0.3 2>/dev/null)
+echo "$SEM_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('hit')==True, f'expected semantic hit: {d}'
+assert d['type']=='semantic'
+assert d['best_match']['similarity'] >= 0.3
+" 2>/dev/null && pass "dr-cache semantic-match works" || fail "dr-cache semantic-match failed"
+
+# Cleanup
+SEM_KEY=$("$PLUGIN_DIR/bin/dr-normalize" cache-key "LLM plugin architecture" 2>/dev/null)
+rm -f "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/cache/query-results/${SEM_KEY}.json" 2>/dev/null
+rm -f "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/cache/query-results/${SEM_KEY}.findings.txt" 2>/dev/null
+
+# SKILL.md has Phase C features
+if grep -q "시맨틱 캐시" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has semantic cache"
+else
+    fail "SKILL.md missing semantic cache"
+fi
+if grep -q "토큰 대시보드" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has token dashboard"
+else
+    fail "SKILL.md missing token dashboard"
+fi
+if grep -q "Batch API" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has Batch API"
+else
+    fail "SKILL.md missing Batch API"
 fi
 
 # --- Summary ---

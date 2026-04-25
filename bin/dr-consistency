@@ -148,11 +148,25 @@ def tfidf_cosine(text_a, text_b):
     return dot / (mag_a * mag_b)
 
 def extract_score(text):
-    """Extract quality score from report header."""
-    m = re.search(r'품질\s*점수[:\s]*(\d+(?:\.\d+)?)', text)
+    """Extract quality score from report header. Handles bold markers."""
+    # Pattern 1: **품질 점수**: 85 or **품질점수**: 85
+    m = re.search(r'\*{0,2}품질\s*점수\*{0,2}[:\s]*(\d+(?:\.\d+)?)', text)
     if m:
         return float(m.group(1))
-    m = re.search(r'점수[:\s]*(\d+(?:\.\d+)?)\s*/\s*100', text)
+    # Pattern 2: **점수**: 85/100 or 점수: 85/100
+    m = re.search(r'\*{0,2}점수\*{0,2}[:\s]*(\d+(?:\.\d+)?)\s*/\s*100', text)
+    if m:
+        return float(m.group(1))
+    # Pattern 3: Score: 85 or **Score**: 85
+    m = re.search(r'\*{0,2}[Ss]core\*{0,2}[:\s]*(\d+(?:\.\d+)?)', text)
+    if m:
+        return float(m.group(1))
+    # Pattern 4: 총점: 85 or **총점**: 85
+    m = re.search(r'\*{0,2}총점\*{0,2}[:\s]*(\d+(?:\.\d+)?)', text)
+    if m:
+        return float(m.group(1))
+    # Pattern 5: bare number after 점수 anywhere (fallback)
+    m = re.search(r'점수[^0-9]*(\d+(?:\.\d+)?)', text[:2000])
     if m:
         return float(m.group(1))
     return None

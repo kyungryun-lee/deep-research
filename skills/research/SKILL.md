@@ -41,7 +41,7 @@ argument-hint: "리서치 주제" [--depth deep] [--rubric poc] [--mode full-pip
 - **research-only** (기본): Phase 1-5만 실행 (리서치 + 보고서)
 - **full-pipeline**: Phase 1-8 전체 실행 (리서치 → 설계 → 적용 → 테스트 → 배포)
 
-## --dry-run 모드 (API 비용 없는 사전 검토)
+## --dry-run 모드 (LLM 호출 없는 사전 검토)
 
 `--dry-run` 플래그가 있으면 **LLM 에이전트를 실행하지 않고** 아래만 수행합니다:
 
@@ -52,17 +52,12 @@ ${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-
 출력:
 1. 쿼리 정규화 + 캐시 히트 여부
 2. 자동 분류 결과 (프로필, 복잡도, 예상 Worker 수)
-3. 예상 비용
+3. 예상 토큰 사용량
 4. 실제 실행에 필요한 명령어
 
-**dry-run은 API 비용을 발생시키지 않습니다.** 실제 리서치를 시작하기 전 비용을 확인할 때 사용합니다.
+**dry-run은 LLM 호출 없이 사전 분석만 수행합니다.** 리서치 규모를 미리 파악할 때 사용합니다.
 
 ## 성능 규칙
-
-### 프롬프트 캐싱
-- 시스템 프롬프트와 반복 사용되는 컨텍스트에 `cache_control: {"type": "ephemeral", "ttl": "1h"}` 적용
-- TTL 1시간: 리서치 세션은 Phase 간 간격이 5분 초과할 수 있으므로 1시간 캐시 사용
-- 캐시 무효화: 타임스탬프, 사용자별 내용은 캐시 블록 밖에 배치
 
 ### 모델 라우팅 기준
 - Planner (sonnet/medium): 전략 수립은 Sonnet으로 충분 (SWE-bench 1.2pt 차이)
@@ -81,14 +76,14 @@ ${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-
 - **쿼리 사전분류**: dr-classify (rubric/complexity/recency 결정론적 분류)
 - **쿼리 기반 캐싱**: dr-cache save-query/load-query (24h TTL, source_jaccard 향상)
 - **시맨틱 캐시**: dr-cache semantic-match (TF-IDF 코사인 유사도, 벡터 DB 불필요)
-- **Worker 결과 압축**: dr-compress summarize (소스당 150단어, 토큰 40-60% 절감)
+- **Worker 결과 압축**: dr-compress summarize (소스당 150단어, 컨텍스트 효율화)
 - **Position Debiasing**: dr-preprocess --shuffle (Worker 순서 랜덤 셔플)
 - **Phase 3.5 병렬 전처리**: dr-preprocess (7단계 병렬, ~70% 속도 향상)
 - **인용 검증**: dr-cite-check validate (claim-source 키워드 오버랩 + URL 패턴 검사)
 - **모순 탐지**: dr-contradict detect (TF-IDF + 극성 분석, Dual-Perspective)
 - **KPR/KPC 정합성**: dr-score kpr-kpc (Key-point Recall/Contradiction)
 - **Knowledge 진화**: dr-knowledge evolve (A-Mem 자동 크로스링크)
-- **토큰 대시보드**: dr-tokens record/report/estimate (Phase별 토큰+비용 추적)
+- **토큰 대시보드**: dr-tokens record/report/estimate (Phase별 토큰 사용량 추적)
 - 세션 기록: dr-memory save
 - **소스 등급 사전분류**: dr-verify classify (도메인 화이트리스트, AI 80% 감소)
 - **URL 유효성 검증**: dr-verify check-urls (HTTP HEAD, AI WebFetch 대체)
@@ -99,7 +94,7 @@ ${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-
 AI 추론 (LLM 필수): 전략 수립, 검색 쿼리 생성, 정보 분석/판단, 차원별 품질 채점, 종합 서술, C등급 소스 정밀 분류
 
 ### 평가 최적화
-- Differential 평가: 2회차+ 보완 시 FAIL된 차원만 재평가 (50%+ 토큰 절감)
+- Differential 평가: 2회차+ 보완 시 FAIL된 차원만 재평가 (토큰 50%+ 절약)
 - Planner 재호출 생략: FAIL 시 supplement_queries를 직접 보완 Worker에 전달
 
 ## 보안 규칙
@@ -139,7 +134,7 @@ iteration = 0
   프로필: {profile} (→ {rubric})
   예상 범위: {depth에 따른 Worker 수}개 에이전트
   핵심 질문: {SEA 체크리스트 상위 3-5개 미리보기}
-  예상 비용: ${dr-tokens estimate 결과}
+  예상 토큰: ${dr-tokens estimate 결과}
   
   진행할까요? (y/수정사항)
 ```
@@ -323,9 +318,9 @@ echo '{all_findings}' | ${PLUGIN_DIR}/bin/dr-cache save-query "{query}"
 ```
 다음 동일 주제 리서치 시 캐시 히트 → 동일 URL 재활용 → source_jaccard 향상
 
-### Phase 3A.2: Worker 결과 압축 (코드 — AI 호출 0, 토큰 40-60% 절감)
+### Phase 3A.2: Worker 결과 압축 (코드 — AI 호출 0, 컨텍스트 효율화)
 
-**SOTA 근거**: ACON (26-54% 토큰 절감), Zylos AI Context Compression (2026)
+**SOTA 근거**: ACON (26-54% 토큰 절약), Zylos AI Context Compression (2026)
 
 Evaluator에 전달하기 전에 Worker 결과를 압축합니다:
 ```bash
@@ -334,7 +329,7 @@ ${PLUGIN_DIR}/bin/dr-compress summarize --max-words 150 < {findings_tmpfile} > {
 
 - 소스당 최대 150단어로 압축 (핵심 주장 + evidence만 보존)
 - Worker 10개의 결과를 원본 전체 대신 압축본으로 전달
-- Evaluator 입력 토큰 40-60% 절감 → Opus 비용 직접 절감
+- Evaluator 입력 토큰 40-60% 절약 → 컨텍스트 윈도우 효율 향상
 - **all_findings_compressed** 변수에 저장 (Phase 4 Evaluator에 전달)
 - **all_findings 원본은 보존** (Phase 5 Synthesizer에는 원본 전달)
 
@@ -585,7 +580,7 @@ echo '{evaluator_scores_json}' | ${PLUGIN_DIR}/bin/dr-score calc --rubric {rubri
 **병렬 실행으로 벽시계 시간 50% 절감** (60-120s → 30-60s)
 
 **depth=deep**이면 **3회** 실행 (2회 + 추가 1회 랜덤 순서).
-**P0-1 압축 적용으로 앙상블 추가 비용이 상쇄됨** (압축 40-60% 절감 > 앙상블 2x 비용).
+**P0-1 압축 적용으로 앙상블 추가 토큰 사용이 상쇄됨** (압축 40-60% 절약 > 앙상블 2x 토큰).
 
 Position Debiasing 규칙:
 - 1차: `dr-preprocess --shuffle` 결과 사용
@@ -736,7 +731,7 @@ ${PLUGIN_DIR}/bin/dr-tokens report --session $SESSION_ID
 
 사용자에게 토큰 요약을 알립니다:
 ```
-[Token Usage] 총 {total_tokens}토큰, 비용 ${cost_usd}
+[Token Usage] 총 {total_tokens}토큰
   최대 Phase: {phase} ({pct}%)
 ```
 
@@ -768,7 +763,7 @@ research-planner 에이전트를 재활용하여 개선안을 설계합니다.
 
 설계 요구사항:
 1. 변경할 파일과 구체적 수정 내용
-2. 각 변경의 예상 효과 (비용/속도/품질)
+2. 각 변경의 예상 효과 (토큰/속도/품질)
 3. 변경 간 의존관계 (순서)
 4. 롤백 방법
 
@@ -779,13 +774,13 @@ JSON 형식으로 출력:
       "id": "CHG-NNN",
       "file": "경로",
       "description": "변경 내용",
-      "expected_effect": {"cost": "X%", "speed": "X%", "quality": "X"},
+      "expected_effect": {"tokens": "X%", "speed": "X%", "quality": "X"},
       "risk": "low|medium|high",
       "rollback": "원복 방법",
       "depends_on": []
     }
   ],
-  "total_expected_effect": {"cost": "X%", "speed": "X%"},
+  "total_expected_effect": {"tokens": "X%", "speed": "X%"},
   "implementation_order": ["CHG-NNN", ...]
 }
 ```
@@ -801,18 +796,18 @@ JSON 형식으로 출력:
 ├── 모델 선택: 해당 태스크에 적절한 모델인가?
 ├── AI vs 코드: 서버 코드로 처리 가능한 것을 AI에 맡기고 있지 않은가?
 ├── 수행 시간: 병렬화 가능? 불필요한 순차 처리?
-└── 비용 계산: 순차 적용 모델로 실제 절감률 계산 (단순 합산 금지)
-    예: 100% × (1-효과1) × (1-효과2) = 실제 잔여 비용
+└── 토큰 계산: 순차 적용 모델로 실제 절약률 계산 (단순 합산 금지)
+    예: 100% × (1-효과1) × (1-효과2) = 실제 잔여 토큰
 ```
 
 성능 검토 결과를 사용자에게 출력합니다:
 ```
 [Phase 6 완료] 설계 + 성능 검토
-  변경 {n}건 | 예상 비용 절감: {X}% | 예상 속도 향상: {Y}%
+  변경 {n}건 | 예상 토큰 절약: {X}% | 예상 속도 향상: {Y}%
   위험: high {n}건, medium {n}건, low {n}건
 
 변경 목록:
-  CHG-NNN: {설명} [{risk}] 비용 {X}% 속도 {Y}%
+  CHG-NNN: {설명} [{risk}] 토큰 {X}% 속도 {Y}%
   ...
 
 진행할까요? (y/n)
@@ -907,7 +902,7 @@ bash tests/validate-plugin.sh
 
 누적 변경: {총 n}건
 테스트: {pass}/{total} 통과
-예상 총 효과: 비용 {X}% 절감, 속도 {Y}% 향상
+예상 총 효과: 토큰 {X}% 절약, 속도 {Y}% 향상
 
 Git에 반영할까요?
 ```
@@ -974,4 +969,4 @@ Git 반영 절차:
 - **Phase 8 Git 반영은 모든 반복 완료 후 1회만 실행합니다 (중간 반복에서 Git 금지)**
 - **Git 반영은 기본적으로 사용자 확인을 받고 진행합니다**
 - **사용자가 사전에 "반영해", "push해" 등 명시적으로 자동 반영을 요청한 경우에만 확인 없이 즉시 실행합니다**
-- **모든 설계에 성능 검토(토큰/모델/AI vs 코드/시간/비용)를 반드시 포함합니다**
+- **모든 설계에 성능 검토(토큰/모델/AI vs 코드/시간/속도)를 반드시 포함합니다**

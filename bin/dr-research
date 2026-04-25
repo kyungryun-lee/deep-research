@@ -32,16 +32,15 @@ Options:
   --mode <research-only|full-pipeline>
                                     Execution mode (default: research-only)
   --output <path>                   Report output path
-  --dry-run                         Estimate cost and plan WITHOUT running research
+  --dry-run                         Estimate tokens and plan WITHOUT running research
   --help                            Show this help
 
 Dry-run mode:
   Runs dr-tokens estimate + dr-classify to show:
-    - Estimated API cost and token breakdown
+    - Estimated token usage per phase
     - Research profile (type, complexity, worker count)
     - Normalized query and cache hit status
   No workers, evaluators, or synthesizers are launched.
-  No API charges incurred beyond the estimate tool itself (no LLM calls).
 
 Examples:
   dr-research "Claude Code context fork best practices 2026"
@@ -124,9 +123,9 @@ if [[ "$DRY_RUN" = true ]]; then
 
     # 4. Token/cost estimate
     echo ""
-    echo "[4/4] Estimating cost..."
+    echo "[4/4] Estimating tokens..."
     ESTIMATE=$("${PLUGIN_DIR}/bin/dr-tokens" estimate --query "$QUERY" --depth "$DEPTH" 2>/dev/null || echo '{}')
-    TOTAL_COST=$(echo "$ESTIMATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('estimated_total_cost_usd', '?'))" 2>/dev/null || echo "?")
+    TOTAL_TOKENS=$(echo "$ESTIMATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('estimated_total_tokens', '?'))" 2>/dev/null || echo "?")
     # Phase breakdown
     echo "$ESTIMATE" | python3 - << 'PYEOF' 2>/dev/null || true
 import json, sys
@@ -135,14 +134,14 @@ breakdown = d.get("breakdown", {})
 if breakdown:
     print("  Phase breakdown:")
     for phase, info in breakdown.items():
-        print(f"    {phase:<12} {info['model']:<8} ~${info['est_cost_usd']:.4f}")
+        print(f"    {phase:<12} {info['model']:<8} ~{info['est_total']:,} tokens")
 PYEOF
 
     echo ""
-    echo "--- Cost Summary ---"
-    echo "  Estimated cost: \$$TOTAL_COST"
+    echo "--- Token Summary ---"
+    echo "  Estimated total tokens: $TOTAL_TOKENS"
     if [[ "$CACHE_HIT" = "YES" ]]; then
-        echo "  Cache hit: source re-fetch skipped → actual cost may be lower"
+        echo "  Cache hit: source re-fetch skipped → actual usage may be lower"
     fi
     echo ""
     echo "--- To run for real ---"
@@ -150,7 +149,7 @@ PYEOF
     [[ -n "$OUTPUT" ]] && RUN_CMD="$RUN_CMD --output \"$OUTPUT\""
     echo "  $RUN_CMD"
     echo ""
-    echo "(Dry-run complete. No API charges incurred.)"
+    echo "(Dry-run complete. No LLM calls made.)"
     exit 0
 fi
 

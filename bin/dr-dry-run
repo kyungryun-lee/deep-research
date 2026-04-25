@@ -15,10 +15,10 @@ Usage: dr-dry-run "query" [--depth surface|standard|deep] [--rubric profile]
 Shows:
   1. Query classification (profile, complexity, workers)
   2. Query normalization + cache check
-  3. Estimated token usage + cost
+  3. Estimated token usage
   4. Research plan preview
 
-No API calls are made. No cost incurred.
+No LLM calls are made.
 EOF
 }
 
@@ -85,14 +85,13 @@ else:
 
 # Step 3: Token estimation
 echo ""
-echo "[4] Cost Estimation"
+echo "[4] Token Estimation"
 est_out=$("$PLUGIN_DIR/bin/dr-tokens" estimate --query "$query" --depth "$depth" 2>/dev/null)
 echo "$est_out" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-total_tokens = sum(p.get('est_input',0)+p.get('est_output',0) for p in d.get('breakdown',{}).values() if isinstance(p,dict))
+total_tokens = d.get('estimated_total_tokens', sum(p.get('est_total',0) for p in d.get('breakdown',{}).values() if isinstance(p,dict)))
 print(f'  Estimated tokens: {total_tokens:,}')
-print(f'  Estimated cost: \${d[\"estimated_total_cost_usd\"]:.3f}')
 print(f'  Depth: {d.get(\"depth\", \"N/A\")}')
 "
 

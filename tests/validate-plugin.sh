@@ -332,7 +332,7 @@ d=json.load(sys.stdin)
 assert d['session']=='$TEST_SESSION'
 assert d['total']['input_tokens']==25000
 assert d['total']['output_tokens']==7000
-assert d['total']['cost_usd'] > 0
+assert d['total']['total_tokens'] == 32000
 assert 'planner' in d['by_phase'] and 'evaluator' in d['by_phase']
 " 2>/dev/null && pass "dr-tokens record+report works" || fail "dr-tokens record+report failed"
 
@@ -342,8 +342,7 @@ echo "$EST_OUT" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 assert d['depth']=='standard'
-assert d['estimated_total_cost_usd'] > 0
-assert d['estimated_total_cost_usd'] > 0
+assert d['estimated_total_tokens'] > 0
 " 2>/dev/null && pass "dr-tokens estimate works" || fail "dr-tokens estimate failed"
 
 # Cleanup test token data

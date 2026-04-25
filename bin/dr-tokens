@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deep Research Token Usage Dashboard
-# Tracks and reports token usage per phase for cost optimization
+# Tracks and reports token usage per phase for complexity analysis
 # Reads from execution logs and provides per-session analytics
 
 set -euo pipefail
@@ -21,15 +21,12 @@ Commands:
   report [--session <id>]     Show token usage report (default: latest session)
   history [--last <n>]        Show usage history across sessions (default: 10)
   estimate --query "query" --depth <d>
-                              Estimate token cost before running research
-  budget --max-cost <usd>     Check if research fits within budget
+                              Estimate token usage before running research
   compare --s1 <id> --s2 <id> Compare token usage between sessions
   help                        Show this help
 
-Pricing (per 1M tokens):
-  opus   input: $15  output: $75
-  sonnet input: $3   output: $15
-  haiku  input: $1   output: $5
+Note: This dashboard tracks token counts for complexity analysis.
+      Max plan users are not billed per-token.
 EOF
 }
 
@@ -55,22 +52,12 @@ cmd_record() {
 import json
 from datetime import datetime
 
-PRICING = {
-    "opus":   {"input": 15.0,  "output": 75.0},
-    "sonnet": {"input": 3.0,   "output": 15.0},
-    "haiku":  {"input": 1.0,   "output": 5.0},
-}
-
 phase = "$phase"
 input_t = int("$input_tokens")
 output_t = int("$output_tokens")
 model = "$model"
 session = "$session"
 
-prices = PRICING.get(model, PRICING["sonnet"])
-cost_input = input_t / 1_000_000 * prices["input"]
-cost_output = output_t / 1_000_000 * prices["output"]
-cost_total = cost_input + cost_output
 entry = {
     "timestamp": datetime.now().isoformat(),
     "session": session,
@@ -78,8 +65,7 @@ entry = {
     "model": model,
     "input_tokens": input_t,
     "output_tokens": output_t,
-    "total_tokens": input_t + output_t,
-    "cost_usd": round(cost_total, 4)
+    "total_tokens": input_t + output_t
 }
 
 log_path = "$TOKEN_DIR/usage.jsonl"
@@ -136,10 +122,9 @@ phases = {}
 for e in session_entries:
     p = e["phase"]
     if p not in phases:
-        phases[p] = {"input": 0, "output": 0, "cost": 0, "calls": 0, "models": set()}
+        phases[p] = {"input": 0, "output": 0, "calls": 0, "models": set()}
     phases[p]["input"] += e["input_tokens"]
     phases[p]["output"] += e["output_tokens"]
-    phases[p]["cost"] += e["cost_usd"]
     phases[p]["calls"] += 1
     phases[p]["models"].add(e["model"])
 
@@ -148,52 +133,52 @@ models = {}
 for e in session_entries:
     m = e["model"]
     if m not in models:
-        models[m] = {"input": 0, "output": 0, "cost": 0, "calls": 0}
+        models[m] = {"input": 0, "output": 0, "calls": 0}
     models[m]["input"] += e["input_tokens"]
     models[m]["output"] += e["output_tokens"]
-    models[m]["cost"] += e["cost_usd"]
     models[m]["calls"] += 1
 
 total_input = sum(e["input_tokens"] for e in session_entries)
 total_output = sum(e["output_tokens"] for e in session_entries)
-total_cost = sum(e["cost_usd"] for e in session_entries)
+total_tokens = total_input + total_output
+
 report = {
     "session": target_session,
     "total": {
         "input_tokens": total_input,
         "output_tokens": total_output,
-        "total_tokens": total_input + total_output,
-        "cost_usd": round(total_cost, 4)
+        "total_tokens": total_tokens
     },
     "by_phase": {
         p: {
             "input_tokens": d["input"],
             "output_tokens": d["output"],
-            "cost_usd": round(d["cost"], 4),
+            "total_tokens": d["input"] + d["output"],
             "calls": d["calls"],
             "models": sorted(d["models"]),
-            "pct_of_total": round(d["cost"] / total_cost * 100, 1) if total_cost > 0 else 0
+            "pct_of_total": round((d["input"] + d["output"]) / total_tokens * 100, 1) if total_tokens > 0 else 0
         }
-        for p, d in sorted(phases.items(), key=lambda x: -x[1]["cost"])
+        for p, d in sorted(phases.items(), key=lambda x: -(x[1]["input"] + x[1]["output"]))
     },
     "by_model": {
         m: {
             "input_tokens": d["input"],
             "output_tokens": d["output"],
-            "cost_usd": round(d["cost"], 4),
+            "total_tokens": d["input"] + d["output"],
             "calls": d["calls"],
-            "pct_of_total": round(d["cost"] / total_cost * 100, 1) if total_cost > 0 else 0
+            "pct_of_total": round((d["input"] + d["output"]) / total_tokens * 100, 1) if total_tokens > 0 else 0
         }
-        for m, d in sorted(models.items(), key=lambda x: -x[1]["cost"])
+        for m, d in sorted(models.items(), key=lambda x: -(x[1]["input"] + x[1]["output"]))
     },
     "optimization_hints": []
 }
 
-# Generate optimization hints
-most_expensive_phase = max(phases.items(), key=lambda x: x[1]["cost"])
-if most_expensive_phase[1]["cost"] > total_cost * 0.4:
+# Generate optimization hints (token-based, not cost-based)
+most_token_phase = max(phases.items(), key=lambda x: x[1]["input"] + x[1]["output"])
+phase_tokens = most_token_phase[1]["input"] + most_token_phase[1]["output"]
+if phase_tokens > total_tokens * 0.4:
     report["optimization_hints"].append(
-        f"{most_expensive_phase[0]} accounts for {round(most_expensive_phase[1]['cost']/total_cost*100)}% of cost — consider model downgrade or output length reduction"
+        f"{most_token_phase[0]} uses {round(phase_tokens/total_tokens*100)}% of tokens — consider model downgrade or output length reduction"
     )
 
 for p, d in phases.items():
@@ -235,10 +220,9 @@ sessions = {}
 for e in entries:
     s = e["session"]
     if s not in sessions:
-        sessions[s] = {"input": 0, "output": 0, "cost": 0, "phases": 0, "models": set()}
+        sessions[s] = {"input": 0, "output": 0, "phases": 0, "models": set()}
     sessions[s]["input"] += e["input_tokens"]
     sessions[s]["output"] += e["output_tokens"]
-    sessions[s]["cost"] += e["cost_usd"]
     sessions[s]["phases"] += 1
     sessions[s]["models"].add(e["model"])
 
@@ -248,7 +232,6 @@ for sid in sorted(sessions.keys(), reverse=True)[:limit]:
     result.append({
         "session": sid,
         "total_tokens": d["input"] + d["output"],
-        "cost_usd": round(d["cost"], 4),
         "phases": d["phases"],
         "models": sorted(d["models"])
     })
@@ -283,65 +266,23 @@ phases = {
     "supplement":  {"model": "sonnet", "input": int(10000 * mult), "output": int(5000 * mult)},
 }
 
-PRICING = {
-    "opus":   {"input": 15.0, "output": 75.0},
-    "sonnet": {"input": 3.0,  "output": 15.0},
-}
-
-total_cost = 0
+total_tokens = 0
 breakdown = {}
 for phase, info in phases.items():
-    prices = PRICING[info["model"]]
-    cost = info["input"] / 1e6 * prices["input"] + info["output"] / 1e6 * prices["output"]
-    total_cost += cost
+    phase_total = info["input"] + info["output"]
+    total_tokens += phase_total
     breakdown[phase] = {
         "model": info["model"],
         "est_input": info["input"],
         "est_output": info["output"],
-        "est_cost_usd": round(cost, 4)
+        "est_total": phase_total
     }
 
 print(json.dumps({
     "depth": depth,
-    "estimated_total_cost_usd": round(total_cost, 4),
+    "estimated_total_tokens": total_tokens,
     "breakdown": breakdown,
-    "note": "Estimates based on typical research runs. Actual usage varies by topic complexity."
-}, ensure_ascii=False, indent=2))
-PYEOF
-}
-
-cmd_budget() {
-    local max_cost=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --max-cost) max_cost="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
-
-    python3 - "$TOKEN_DIR/usage.jsonl" "$max_cost" << 'PYEOF'
-import json, sys, os
-
-log_path, max_cost = sys.argv[1], float(sys.argv[2])
-
-if not os.path.exists(log_path):
-    print(json.dumps({"within_budget": True, "spent": 0, "remaining": max_cost, "message": "No usage yet"}))
-    sys.exit(0)
-
-total = 0
-with open(log_path) as f:
-    for line in f:
-        line = line.strip()
-        if line:
-            total += json.loads(line).get("cost_usd", 0)
-
-remaining = max_cost - total
-print(json.dumps({
-    "within_budget": remaining > 0,
-    "max_cost_usd": max_cost,
-    "spent_usd": round(total, 4),
-    "remaining_usd": round(remaining, 4),
-    "usage_pct": round(total / max_cost * 100, 1) if max_cost > 0 else 0
+    "note": "Estimates based on typical research runs. Max plan: no per-token billing."
 }, ensure_ascii=False, indent=2))
 PYEOF
 }
@@ -380,7 +321,6 @@ def session_summary(entries, sid):
     return {
         "session": sid,
         "total_tokens": sum(e["input_tokens"] + e["output_tokens"] for e in se),
-        "cost_usd": round(sum(e["cost_usd"] for e in se), 4),
         "phases": len(se),
         "input_tokens": sum(e["input_tokens"] for e in se),
         "output_tokens": sum(e["output_tokens"] for e in se),
@@ -395,8 +335,7 @@ if not sum1 or not sum2:
 
 diff = {
     "tokens_delta": sum2["total_tokens"] - sum1["total_tokens"],
-    "cost_delta_usd": round(sum2["cost_usd"] - sum1["cost_usd"], 4),
-    "cost_change_pct": round((sum2["cost_usd"] - sum1["cost_usd"]) / sum1["cost_usd"] * 100, 1) if sum1["cost_usd"] > 0 else 0
+    "tokens_change_pct": round((sum2["total_tokens"] - sum1["total_tokens"]) / sum1["total_tokens"] * 100, 1) if sum1["total_tokens"] > 0 else 0
 }
 
 print(json.dumps({"session_1": sum1, "session_2": sum2, "delta": diff}, ensure_ascii=False, indent=2))
@@ -408,7 +347,6 @@ case "${1:-help}" in
     report)   shift; cmd_report "$@" ;;
     history)  shift; cmd_history "$@" ;;
     estimate) shift; cmd_estimate "$@" ;;
-    budget)   shift; cmd_budget "$@" ;;
     compare)  shift; cmd_compare "$@" ;;
     help)     usage ;;
     *)        usage ;;

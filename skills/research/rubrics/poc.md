@@ -6,8 +6,11 @@ Analysis(분석깊이)의 가중치가 가장 높습니다.
 ## 가중치 (Evaluator 자동 추출용)
 
 ```json
-{"core":{"accuracy":0.15,"coverage":0.10,"recency":0.10,"structure":0.05},"context":{"proven":0.10,"actionability":0.15,"efficiency":0.05,"env_fit":0.05,"analysis":0.25},"sea_threshold":70}
+{"core":{"accuracy":0.15,"coverage":0.10,"recency":0.10,"structure_coherence":0.03},"context":{"proven":0.10,"actionability":0.15,"efficiency":0.05,"env_fit":0.05,"analysis":0.22,"citation_quality":0.05},"sea_threshold":70,"hard_floor":{"accuracy":40,"cap":50}}
 ```
+
+**코드 위임**: Structure & Coherence는 dr-score structure 100% 코드 계산
+**Hard Floor**: Accuracy < 40이면 총점 50 상한
 
 ## 맥락 확장 특이사항
 
@@ -44,3 +47,8 @@ PoC는 L1(개념 검증) 수준도 허용. L0만 아니면 됨.
 - 단순 나열, 분석 깊이 부족
 - 가능/불가능 판정 근거 미제시
 - 이론만, 실현 가능성 미검증
+
+### 점수 30 예시 (Poor)
+- 할루시네이션 존재, 가짜 벤치마크 인용
+- 검증 대상 기술의 기본 개념 오류
+- 인용 소스가 주장을 지지하지 않음

@@ -6,8 +6,12 @@ Analysis(분석깊이)와 Coverage(범위)의 가중치가 높습니다.
 ## 가중치 (Evaluator 자동 추출용)
 
 ```json
-{"core":{"accuracy":0.15,"coverage":0.15,"recency":0.15,"structure":0.05},"context":{"proven":0.05,"actionability":0.10,"efficiency":0.05,"analysis":0.30},"sea_threshold":70}
+{"core":{"accuracy":0.15,"coverage":0.15,"recency":0.15,"structure_coherence":0.03},"context":{"proven":0.05,"actionability":0.08,"efficiency":0.04,"analysis":0.27,"citation_quality":0.05,"novelty":0.03},"sea_threshold":70,"hard_floor":{"accuracy":40,"cap":50}}
 ```
+
+**코드 위임**: Structure & Coherence는 dr-score structure 100% 코드 계산
+**Hard Floor**: Accuracy < 40이면 총점 50 상한
+**Novelty**: 탐색 프로필 전용 — 기존 지식 대비 새로운 연결/통찰 여부
 
 ## 맥락 확장 특이사항
 
@@ -50,3 +54,8 @@ Analysis(분석깊이)와 Coverage(범위)의 가중치가 높습니다.
 - 단순 논문/기술 나열, 분석 깊이 부족
 - 최신성 부족, 오래된 소스 다수
 - 탐색 방향 불명확
+
+### 점수 30 예시 (Poor)
+- 할루시네이션 존재, 존재하지 않는 논문 인용
+- 핵심 연구 흐름을 완전히 놓침
+- 인용이 주장을 지지하지 않음, 소스 3건 미만

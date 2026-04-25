@@ -3,7 +3,7 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "mkdir -p \"${CLAUDE_PLUGIN_DATA}/memory\" \"${CLAUDE_PLUGIN_DATA}/cache\" \"${CLAUDE_PLUGIN_DATA}/cache/worker-results\" 2>/dev/null; echo '{\"additionalContext\": \"Deep Research v2 loaded. Cache: '\"${CLAUDE_PLUGIN_DATA}\"'/cache/\"}'",
+        "command": "mkdir -p \"${CLAUDE_PLUGIN_DATA}/memory\" \"${CLAUDE_PLUGIN_DATA}/cache\" \"${CLAUDE_PLUGIN_DATA}/cache/worker-results\" \"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\" 2>/dev/null; echo '{\"additionalContext\": \"Deep Research v2.5 loaded. Cache: '\"${CLAUDE_PLUGIN_DATA}\"'/cache/\"}'",
         "timeout": 10
       }
     ],
@@ -18,6 +18,13 @@
       {
         "type": "command",
         "command": "echo '{\"suppressOutput\": true}'",
+        "timeout": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "if [ \"$TOOL_NAME\" = 'WebFetch' ] || [ \"$TOOL_NAME\" = 'WebSearch' ]; then CACHE_DIR=\"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\"; HASH=$(echo \"$TOOL_INPUT\" | md5sum | cut -c1-12); echo \"$TOOL_OUTPUT\" > \"$CACHE_DIR/$HASH.txt\" 2>/dev/null; fi; echo '{\"suppressOutput\": true}'",
         "timeout": 5
       }
     ]

@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# Deep Research Citation Checker — Post-synthesis citation validation
+# SOTA ref: FACTUM (arXiv 2601.05866), SourceCheckup (Nature 2025)
+# Validates that each claim's cited source actually supports the claim
+# Input: JSON with claims[] and sources[] (stdin)
+# Output: Validation results JSON
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+    cat <<'EOF'
+Deep Research Citation Checker — Post-synthesis validation
+
+Usage: dr-cite-check <command> [args]
+
+Commands:
+  validate                Validate all claim-source pairs (stdin: JSON)
+  check-urls              Check URL existence only (stdin: URL array)
+  report [--format md]    Generate validation report (stdin: validate output)
+  help                    Show this help
+
+Input format (validate):
+  {
+    "claims": [{"id":"CL-001","text":"claim text","evidence":[{"url":"...","excerpt":"..."}]}],
+    "sources": [{"url":"...","content":"cached source text..."}]
+  }
+
+Output: {
+  "results": [{"claim_id":"CL-001","status":"valid|weak|phantom|unsupported","overlap":0.75}],
+  "summary": {"valid":N,"weak":N,"phantom":N,"unsupported":N,"total":N}
+}
+EOF
+}
+
+cmd_validate() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" << 'PYEOF'
+import json, sys, re
+from collections import Counter
+
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
+
+claims = data.get("claims", [])
+# Build source content index: url -> content
+source_content = {}
+for src in data.get("sources", []):
+    url = src.get("url", "")
+    content = src.get("content", "")
+    if url and content:
+        source_content[url] = content.lower()
+
+def tokenize(text):
+    """Extract meaningful tokens from text"""
+    return set(re.findall(r'[a-z0-9\uac00-\ud7a3]{2,}', text.lower()))
+
+def keyword_overlap(claim_text, source_text):
+    """Calculate keyword overlap between claim and source"""
+    claim_tokens = tokenize(claim_text)
+    source_tokens = tokenize(source_text)
+    if not claim_tokens or not source_tokens:
+        return 0.0
+    return len(claim_tokens & source_tokens) / len(claim_tokens)
+
+def check_url_pattern(url):
+    """Check if URL looks valid (not fabricated)"""
+    suspicious = [
+        r'example\.com', r'placeholder', r'test\.test',
+        r'fake-', r'not-real', r'sample\.'
+    ]
+    for pat in suspicious:
+        if re.search(pat, url, re.IGNORECASE):
+            return False
+    return True
+
+results = []
+for claim in claims:
+    claim_id = claim.get("id", "unknown")
+    claim_text = claim.get("text", "")
+    evidence = claim.get("evidence", [])
+
+    if not evidence:
+        results.append({
+            "claim_id": claim_id,
+            "status": "unsupported",
+            "overlap": 0,
+            "reason": "no evidence cited"
+        })
+        continue
+
+    best_status = "phantom"
+    best_overlap = 0.0
+    evidence_results = []
+
+    for ev in evidence:
+        url = ev.get("url", "")
+        excerpt = ev.get("excerpt", "")
+
+        # Check 1: URL pattern validity
+        if not url or not check_url_pattern(url):
+            evidence_results.append({"url": url, "status": "phantom", "reason": "suspicious URL pattern"})
+            continue
+
+        # Check 2: Source content available?
+        if url in source_content:
+            source_text = source_content[url]
+            # Check 3: Keyword overlap between claim and source
+            overlap = keyword_overlap(claim_text, source_text)
+
+            if excerpt:
+                # Also check excerpt against source
+                excerpt_overlap = keyword_overlap(excerpt, source_text)
+                overlap = max(overlap, excerpt_overlap)
+
+            if overlap >= 0.3:
+                status = "valid"
+            elif overlap >= 0.15:
+                status = "weak"
+            else:
+                status = "weak"
+
+            evidence_results.append({
+                "url": url, "status": status, "overlap": round(overlap, 3)
+            })
+            best_overlap = max(best_overlap, overlap)
+            if status == "valid":
+                best_status = "valid"
+            elif status == "weak" and best_status != "valid":
+                best_status = "weak"
+        else:
+            # Source content not cached — can't verify, mark as unchecked
+            evidence_results.append({
+                "url": url, "status": "unchecked", "reason": "source content not cached"
+            })
+            if best_status == "phantom":
+                best_status = "unchecked"
+
+    results.append({
+        "claim_id": claim_id,
+        "status": best_status,
+        "overlap": round(best_overlap, 3),
+        "evidence_count": len(evidence),
+        "evidence_results": evidence_results
+    })
+
+# Summary
+status_counts = Counter(r["status"] for r in results)
+summary = {
+    "valid": status_counts.get("valid", 0),
+    "weak": status_counts.get("weak", 0),
+    "phantom": status_counts.get("phantom", 0),
+    "unsupported": status_counts.get("unsupported", 0),
+    "unchecked": status_counts.get("unchecked", 0),
+    "total": len(results),
+    "validation_rate": round(
+        status_counts.get("valid", 0) / len(results) * 100, 1
+    ) if results else 0
+}
+
+print(json.dumps({
+    "results": results,
+    "summary": summary
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_check_urls() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" << 'PYEOF'
+import json, sys, re
+
+with open(sys.argv[1]) as f:
+    urls = json.loads(f.read())
+
+results = []
+suspicious_patterns = [
+    r'example\.com', r'placeholder', r'test\.test',
+    r'fake-', r'not-real', r'^https?://[a-z]{1,3}\.[a-z]{2}$'
+]
+
+for url in urls:
+    is_suspicious = any(re.search(p, url, re.I) for p in suspicious_patterns)
+    # Basic format check
+    is_valid_format = bool(re.match(r'https?://[^\s/]+\.[^\s/]+', url))
+
+    status = "suspicious" if is_suspicious else ("valid_format" if is_valid_format else "invalid_format")
+    results.append({"url": url, "status": status})
+
+from collections import Counter
+counts = Counter(r["status"] for r in results)
+print(json.dumps({
+    "results": results,
+    "summary": dict(counts),
+    "total": len(results)
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_report() {
+    local format="json"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --format) format="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    if [ "$format" = "md" ]; then
+        python3 - "$tmpfile" << 'PYEOF'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
+
+results = data.get("results", [])
+summary = data.get("summary", {})
+
+print("## Citation Validation Report\n")
+print(f"| Status | Count |")
+print(f"|--------|-------|")
+for status in ["valid", "weak", "phantom", "unsupported", "unchecked"]:
+    count = summary.get(status, 0)
+    if count > 0:
+        emoji = {"valid":"✅","weak":"⚠️","phantom":"❌","unsupported":"🔴","unchecked":"❓"}
+        print(f"| {emoji.get(status,'')} {status} | {count} |")
+print(f"| **Total** | **{summary.get('total',0)}** |")
+print(f"\nValidation Rate: **{summary.get('validation_rate',0)}%**\n")
+
+# Show problems
+problems = [r for r in results if r["status"] in ("phantom", "unsupported", "weak")]
+if problems:
+    print("### Issues Found\n")
+    for p in problems[:20]:
+        print(f"- **{p['claim_id']}** [{p['status']}]: overlap={p.get('overlap',0)}")
+PYEOF
+    else
+        cat "$tmpfile"
+    fi
+    rm -f "$tmpfile"
+}
+
+case "${1:-help}" in
+    validate)    shift; cmd_validate "$@" ;;
+    check-urls)  cmd_check_urls ;;
+    report)      shift; cmd_report "$@" ;;
+    help)        usage ;;
+    *)           usage ;;
+esac

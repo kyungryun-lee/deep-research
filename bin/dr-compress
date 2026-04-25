@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# Deep Research Compress CLI — Worker Result Compression
+# Compresses worker findings to key claims + evidence per source
+# SOTA ref: ACON (26-54% token reduction), Zylos AI Context Compression
+# Input: Worker findings text (stdin)
+# Output: Compressed findings (stdout)
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Deep Research Compress — Worker Result Compression
+
+Usage: dr-compress <command> [args]
+
+Commands:
+  summarize [--max-words N]    Compress findings to key claims (default: 150 words/source)
+  stats                        Show compression statistics (stdin: original, arg: compressed)
+  help                         Show this help
+
+Input: Worker findings text via stdin
+Output: Compressed text or JSON stats
+EOF
+}
+
+cmd_summarize() {
+    local max_words=150
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --max-words) max_words="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" "$max_words" << 'PYEOF'
+import json, sys, re
+
+with open(sys.argv[1]) as f:
+    text = f.read()
+max_words = int(sys.argv[2])
+
+if not text.strip():
+    print("")
+    sys.exit(0)
+
+# Split into worker sections
+worker_sections = re.split(r'===\s*Worker\s+\w+:', text)
+if len(worker_sections) <= 1:
+    # No worker markers — try splitting by ## Worker Report
+    worker_sections = re.split(r'## Worker Report:', text)
+
+compressed_parts = []
+total_original_words = len(text.split())
+total_compressed_words = 0
+
+for section in worker_sections:
+    if not section.strip():
+        continue
+
+    # Extract role from first line
+    lines = section.strip().split('\n')
+    role = lines[0].strip().rstrip('=').strip() if lines else "Unknown"
+
+    # Extract URLs and tiers from table
+    urls = []
+    for m in re.finditer(r'\|\s*\d+\s*\|\s*(https?://[^\s|]+)\s*\|\s*([SABC])\s*\|', section):
+        urls.append({"url": m.group(1), "tier": m.group(2)})
+
+    # Extract key findings (#### sections)
+    findings = []
+    finding_matches = re.finditer(r'####\s+(?:발견\s+\d+:\s*)?(.+?)(?=####|\Z)', section, re.DOTALL)
+    for fm in finding_matches:
+        title = fm.group(1).split('\n')[0].strip()
+        body = fm.group(1).strip()
+        # Extract source and content
+        source_match = re.search(r'\*\*소스\*\*:\s*(https?://[^\s)]+)', body)
+        content_match = re.search(r'\*\*내용\*\*:\s*(.+?)(?=\n\*\*|\Z)', body, re.DOTALL)
+
+        finding = {"title": title}
+        if source_match:
+            finding["source"] = source_match.group(1)
+        if content_match:
+            # Truncate content to max_words per finding
+            content = content_match.group(1).strip()
+            words = content.split()
+            if len(words) > max_words:
+                content = ' '.join(words[:max_words]) + '...'
+            finding["content"] = content
+        findings.append(finding)
+
+    # Extract source stats
+    stats_match = re.search(r'S등급:\s*(\d+)건.*?A등급:\s*(\d+)건', section)
+    s_count = int(stats_match.group(1)) if stats_match else 0
+    a_count = int(stats_match.group(2)) if stats_match else 0
+
+    # Build compressed section
+    compressed = f"### {role}\n"
+    compressed += f"소스: {len(urls)}건 (S:{s_count} A:{a_count})\n\n"
+
+    for i, f_item in enumerate(findings[:10], 1):  # Max 10 findings per worker
+        compressed += f"**{i}. {f_item.get('title', 'N/A')}**\n"
+        if 'source' in f_item:
+            compressed += f"- 소스: {f_item['source']}\n"
+        if 'content' in f_item:
+            compressed += f"- {f_item['content']}\n"
+        compressed += "\n"
+
+    compressed_parts.append(compressed)
+    total_compressed_words += len(compressed.split())
+
+# If no structured parsing worked, do simple truncation
+if not compressed_parts:
+    words = text.split()
+    # Keep first max_words*3 words as fallback
+    limit = max_words * 3
+    if len(words) > limit:
+        compressed_text = ' '.join(words[:limit]) + '\n\n[... truncated from {} words]'.format(len(words))
+    else:
+        compressed_text = text
+    print(compressed_text)
+    # Stats to stderr
+    ratio = round(len(compressed_text.split()) / total_original_words * 100, 1) if total_original_words else 100
+    sys.stderr.write(json.dumps({
+        "original_words": total_original_words,
+        "compressed_words": len(compressed_text.split()),
+        "ratio_pct": ratio
+    }) + '\n')
+    sys.exit(0)
+
+output = "# Compressed Worker Findings\n\n"
+output += '\n'.join(compressed_parts)
+
+ratio = round(total_compressed_words / total_original_words * 100, 1) if total_original_words else 100
+output += f"\n---\n[Compression: {total_original_words} → {total_compressed_words} words ({ratio}%)]\n"
+
+print(output)
+
+# Stats to stderr
+sys.stderr.write(json.dumps({
+    "original_words": total_original_words,
+    "compressed_words": total_compressed_words,
+    "ratio_pct": ratio,
+    "workers": len(compressed_parts)
+}) + '\n')
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_stats() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" << 'PYEOF'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    text = f.read()
+
+words = len(text.split())
+urls = len(set(__import__('re').findall(r'https?://[^\s)]+', text)))
+findings = len(__import__('re').findall(r'####\s+발견|^\*\*\d+\.', text, __import__('re').MULTILINE))
+
+print(json.dumps({
+    "words": words,
+    "urls": urls,
+    "findings": findings,
+    "estimated_tokens": int(words * 1.3)
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+case "${1:-help}" in
+    summarize) shift; cmd_summarize "$@" ;;
+    stats)     cmd_stats ;;
+    help)      usage ;;
+    *)         usage ;;
+esac

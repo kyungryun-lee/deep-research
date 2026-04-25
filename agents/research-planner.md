@@ -99,17 +99,35 @@ maxTurns: 15
 - 유사 질문의 이전 플랜이 캐시에 있으면 재활용
 - 전체 재생성 대신 차분 업데이트만
 
-## Step 6: SEA 체크리스트 생성
+## Step 6: HyDE — 가상 이상적 답변 생성
+
+**SOTA 근거**: HyDE (arXiv 2212.10496) — precision +42pp, recall +45pp
+
+리서치 질문에 대한 **가상 이상적 답변**을 1문단(100-150단어)으로 생성합니다.
+이 문단은 첫 번째 Worker의 검색 쿼리에 추가되어 키워드 검색 한계를 보완합니다.
+
+```
+"이 질문에 대한 이상적인 전문가 답변"을 상상하여 1문단으로 작성합니다:
+- 핵심 기술 용어, 프레임워크명, 벤치마크명 포함
+- 구체적 수치/성능 수준 포함 (추정 가능한 범위)
+- 관련 주요 논문/도구 이름 포함
+```
+
+생성된 HyDE 문단을 `hyde_paragraph` 필드에 저장합니다.
+첫 번째 Worker의 queries 목록 **맨 앞에** HyDE 문단을 추가 검색어로 포함합니다.
+
+## Step 7: SEA 체크리스트 생성
 
 질문에서 반드시 답해야 할 정보 항목을 추출합니다.
 
 ## 출력 형식
 
 <output_schema>
-{"classification":{"type":"string","complexity":"integer","domains":"array","recency":"string"},"profile":"string","strategy":{"total_workers":"integer","rubric":"string","target_score":"integer","max_iterations":"integer"},"workers":"array","sea_checklist":"array","source_strategy":"string","strategy_rationale":"string","anchor_strategy":"string"}
+{"classification":{"type":"string","complexity":"integer","domains":"array","recency":"string"},"profile":"string","strategy":{"total_workers":"integer","rubric":"string","target_score":"integer","max_iterations":"integer"},"workers":"array","sea_checklist":"array","source_strategy":"string","strategy_rationale":"string","anchor_strategy":"string","hyde_paragraph":"string"}
 </output_schema>
 
 새 필드:
 - `anchor_strategy`: "reuse" (앵커 소스 활용) | "fresh" (첫 리서치) | "expand" (앵커 기반 확장)
+- `hyde_paragraph`: 가상 이상적 답변 1문단 (첫 번째 Worker 검색어에 추가)
 
 JSON만 출력합니다. 다른 텍스트 없이 JSON만 출력합니다.

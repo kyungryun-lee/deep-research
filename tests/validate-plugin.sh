@@ -470,6 +470,100 @@ else
     fail "Synthesizer missing A-Mem evolution"
 fi
 
+# --- 14. v2.5 Meta-Evaluation Improvements ---
+echo ""
+echo "[14] v2.5 Improvements (P0-P2)"
+
+# P0-1: dr-compress executable + functional test
+[ -x "$PLUGIN_DIR/bin/dr-compress" ] && pass "dr-compress is executable" || fail "dr-compress not executable"
+
+COMPRESS_OUT=$(printf '#### 발견 1: React Performance\n- **소스**: https://react.dev\n- **내용**: React 18 introduces concurrent features that improve rendering performance significantly with automatic batching.\n\n#### 발견 2: Vue Reactivity\n- **소스**: https://vuejs.org\n- **내용**: Vue 3 reactivity system uses Proxy-based tracking for better performance.\n' | "$PLUGIN_DIR/bin/dr-compress" summarize --max-words 50 2>/dev/null)
+[ -n "$COMPRESS_OUT" ] && pass "dr-compress summarize produces output" || fail "dr-compress summarize failed"
+
+# P0-2: dr-cite-check executable + functional test
+[ -x "$PLUGIN_DIR/bin/dr-cite-check" ] && pass "dr-cite-check is executable" || fail "dr-cite-check not executable"
+
+CITE_OUT=$(echo '{"claims":[{"id":"CL-001","text":"React uses virtual DOM for performance","evidence":[{"url":"https://react.dev","excerpt":"virtual DOM diffing algorithm"}]},{"id":"CL-002","text":"unsupported claim","evidence":[]}],"sources":[{"url":"https://react.dev","content":"React uses a virtual DOM diffing algorithm to efficiently update the real DOM"}]}' | "$PLUGIN_DIR/bin/dr-cite-check" validate 2>/dev/null)
+echo "$CITE_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['summary']['valid'] >= 1, f'expected valid: {d}'
+assert d['summary']['unsupported'] >= 1, f'expected unsupported: {d}'
+assert d['summary']['total'] == 2
+" 2>/dev/null && pass "dr-cite-check validate works" || fail "dr-cite-check validate failed"
+
+# P1-3: dr-preprocess --shuffle
+[ -x "$PLUGIN_DIR/bin/dr-preprocess" ] && pass "dr-preprocess is executable" || fail "dr-preprocess not executable"
+
+# P2-2: dr-contradict executable + functional test
+[ -x "$PLUGIN_DIR/bin/dr-contradict" ] && pass "dr-contradict is executable" || fail "dr-contradict not executable"
+
+CONTRA_OUT=$(echo '[{"id":"CL-A","text":"React is faster than Vue in benchmarks","source":"url1"},{"id":"CL-B","text":"Vue outperforms React and is not slower","source":"url2"}]' | "$PLUGIN_DIR/bin/dr-contradict" detect 2>/dev/null)
+echo "$CONTRA_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['total_claims'] == 2
+assert 'conflicts' in d
+" 2>/dev/null && pass "dr-contradict detect works" || fail "dr-contradict detect failed"
+
+# SKILL.md has new phases
+if grep -q "Phase 3A.2" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has Phase 3A.2 (Worker compression)"
+else
+    fail "SKILL.md missing Phase 3A.2"
+fi
+if grep -q "반성적 재검색" "$PLUGIN_DIR/skills/research/SKILL.md" || grep -q "FAIR-RAG" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has reflective re-search (FAIR-RAG)"
+else
+    fail "SKILL.md missing reflective re-search"
+fi
+if grep -q "Phase 4.5" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has Phase 4.5 (post-evaluate verification)"
+else
+    fail "SKILL.md missing Phase 4.5"
+fi
+if grep -q "인용 검증" "$PLUGIN_DIR/skills/research/SKILL.md" || grep -q "dr-cite-check" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has citation validation"
+else
+    fail "SKILL.md missing citation validation"
+fi
+if grep -q "모순 탐지" "$PLUGIN_DIR/skills/research/SKILL.md" || grep -q "dr-contradict" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has contradiction detection"
+else
+    fail "SKILL.md missing contradiction detection"
+fi
+if grep -q "모든 depth에서" "$PLUGIN_DIR/skills/research/SKILL.md" && grep -q "2회 독립 실행" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has 2-run ensemble for all depths"
+else
+    fail "SKILL.md missing all-depth ensemble"
+fi
+
+# Planner has HyDE
+if grep -q "HyDE" "$PLUGIN_DIR/agents/research-planner.md" || grep -q "hyde_paragraph" "$PLUGIN_DIR/agents/research-planner.md"; then
+    pass "Planner has HyDE (Hypothetical Document Embeddings)"
+else
+    fail "Planner missing HyDE"
+fi
+
+# hooks.json has PostToolUse
+if grep -q "PostToolUse" "$PLUGIN_DIR/hooks/hooks.json"; then
+    pass "hooks.json has PostToolUse cache hook"
+else
+    fail "hooks.json missing PostToolUse"
+fi
+
+# dr-compress stats test
+STATS_OUT=$(echo "Some text with findings about React and Vue performance benchmarks" | "$PLUGIN_DIR/bin/dr-compress" stats 2>/dev/null)
+echo "$STATS_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'words' in d and d['words'] > 0" 2>/dev/null && pass "dr-compress stats works" || fail "dr-compress stats failed"
+
+# dr-cite-check check-urls test
+URL_CHECK=$(echo '["https://react.dev","https://fake-site.example.com"]' | "$PLUGIN_DIR/bin/dr-cite-check" check-urls 2>/dev/null)
+echo "$URL_CHECK" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d['total'] == 2
+" 2>/dev/null && pass "dr-cite-check check-urls works" || fail "dr-cite-check check-urls failed"
+
 # --- Summary ---
 echo ""
 echo "=== Results ==="

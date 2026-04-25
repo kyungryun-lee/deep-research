@@ -15,8 +15,11 @@ Deep Research Preprocess — Phase 3.5 Parallel Execution
 Usage: dr-preprocess <command> [args]
 
 Commands:
-  run --findings <path> --urls <path> --sources <path> --claims <path>
+  run --findings <path> --urls <path> --sources <path> --claims <path> [--shuffle]
       Run all Phase 3.5 steps in parallel and combine results
+      --shuffle: Randomize worker section order (position debiasing for Evaluator)
+  compress --findings <path> [--max-words N]
+      Compress worker findings (default: 150 words/source)
   help                      Show this help
 
 Input files (JSON):
@@ -29,17 +32,56 @@ Output: Combined JSON with all code_metrics
 EOF
 }
 
+cmd_compress() {
+    local findings="" max_words=150
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --findings) findings="$2"; shift 2 ;;
+            --max-words) max_words="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    if [ -n "$findings" ] && [ -f "$findings" ]; then
+        cat "$findings" | "$PLUGIN_DIR/bin/dr-compress" summarize --max-words "$max_words"
+    else
+        cat | "$PLUGIN_DIR/bin/dr-compress" summarize --max-words "$max_words"
+    fi
+}
+
 cmd_run() {
-    local findings="" urls="" sources="" claims=""
+    local findings="" urls="" sources="" claims="" shuffle=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --findings) findings="$2"; shift 2 ;;
             --urls) urls="$2"; shift 2 ;;
             --sources) sources="$2"; shift 2 ;;
             --claims) claims="$2"; shift 2 ;;
+            --shuffle) shuffle=true; shift ;;
             *) shift ;;
         esac
     done
+
+    # Position debiasing: shuffle worker sections in findings
+    if [ "$shuffle" = true ] && [ -n "$findings" ] && [ -f "$findings" ]; then
+        python3 -c "
+import sys, re, random
+with open(sys.argv[1]) as f:
+    text = f.read()
+# Split by === Worker markers
+parts = re.split(r'(=== Worker \w+:)', text)
+if len(parts) > 2:
+    header = parts[0]
+    # Group marker+content pairs
+    sections = []
+    for i in range(1, len(parts), 2):
+        marker = parts[i]
+        content = parts[i+1] if i+1 < len(parts) else ''
+        sections.append(marker + content)
+    random.shuffle(sections)
+    with open(sys.argv[1], 'w') as f:
+        f.write(header + ''.join(sections))
+" "$findings"
+    fi
 
     # Create temp dir for parallel outputs
     local tmpdir
@@ -155,7 +197,8 @@ PYEOF
 }
 
 case "${1:-help}" in
-    run)   shift; cmd_run "$@" ;;
-    help)  usage ;;
-    *)     usage ;;
+    run)      shift; cmd_run "$@" ;;
+    compress) shift; cmd_compress "$@" ;;
+    help)     usage ;;
+    *)        usage ;;
 esac

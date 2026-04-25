@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# Deep Research Contradiction Detector
+# SOTA ref: Dual-Perspective Verification (arXiv 2602.18693)
+# Detects conflicting claims across sources using TF-IDF + negation analysis
+# Input: JSON array of claims (stdin)
+# Output: Conflicts JSON
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Deep Research Contradiction Detector
+
+Usage: dr-contradict <command> [args]
+
+Commands:
+  detect [--threshold N]    Detect contradictions between claims (stdin: claims JSON)
+  report [--format md]      Format contradiction report (stdin: detect output)
+  help                      Show this help
+
+Input format (detect):
+  [
+    {"id":"CL-001","text":"React is faster than Vue","source":"url1","tier":"A"},
+    {"id":"CL-002","text":"Vue outperforms React in benchmarks","source":"url2","tier":"S"}
+  ]
+
+Conflict types:
+  - FACTUAL_CONFLICT: contradicting factual claims (e.g., "X is 3" vs "X is 5")
+  - NEGATION_CONFLICT: one claim negates the other
+  - SCOPE_CONFLICT: same metric, different scope/context
+EOF
+}
+
+cmd_detect() {
+    local threshold=0.4
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --threshold) threshold="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    python3 - "$tmpfile" "$threshold" << 'PYEOF'
+import json, sys, re, math
+from collections import Counter
+
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
+threshold = float(sys.argv[2])
+
+claims = data if isinstance(data, list) else data.get("claims", [])
+if len(claims) < 2:
+    print(json.dumps({"conflicts": [], "total_claims": len(claims), "conflicts_found": 0}))
+    sys.exit(0)
+
+# --- Tokenization ---
+def tokenize(text):
+    return re.findall(r'[a-z0-9\uac00-\ud7a3]{2,}', text.lower())
+
+def token_set(text):
+    return set(tokenize(text))
+
+# --- Negation detection ---
+NEGATION_EN = {'not', 'no', 'never', 'without', 'lack', 'fail', 'cannot', 'dont',
+               'doesnt', 'isnt', 'arent', 'wont', 'shouldnt', 'unable', 'impossible',
+               'neither', 'nor', 'rarely', 'hardly', 'fewer', 'worse', 'slower',
+               'less', 'lower', 'decrease', 'decline', 'drop', 'reduce'}
+NEGATION_KO = {'없', '아닌', '불가', '못', '실패', '부족', '감소', '하락',
+               '저하', '약화', '제한', '불가능', '어려', '않'}
+NEGATIONS = NEGATION_EN | NEGATION_KO
+
+COMPARATIVES_POS = {'faster', 'better', 'higher', 'more', 'outperform', 'superior',
+                    'improve', 'increase', 'exceed', 'surpass', '빠른', '우수', '향상'}
+COMPARATIVES_NEG = {'slower', 'worse', 'lower', 'less', 'underperform', 'inferior',
+                    'decrease', 'decline', 'lag', '느린', '열등', '저하'}
+
+def has_negation(tokens):
+    return bool(set(tokens) & NEGATIONS)
+
+def get_polarity(tokens):
+    """Returns +1 for positive, -1 for negative, 0 for neutral"""
+    pos = len(set(tokens) & COMPARATIVES_POS)
+    neg = len(set(tokens) & COMPARATIVES_NEG) + (1 if has_negation(tokens) else 0)
+    if pos > neg: return 1
+    if neg > pos: return -1
+    return 0
+
+# --- TF-IDF cosine similarity ---
+all_tokens = [tokenize(c.get("text", "")) for c in claims]
+
+# Build document frequency
+df = Counter()
+for tokens in all_tokens:
+    for t in set(tokens):
+        df[t] += 1
+
+N = len(all_tokens)
+
+def tfidf_vector(tokens):
+    tf = Counter(tokens)
+    vec = {}
+    for t, count in tf.items():
+        idf = math.log((N + 1) / (df.get(t, 0) + 1))
+        vec[t] = count * idf
+    return vec
+
+def cosine_sim(v1, v2):
+    common = set(v1.keys()) & set(v2.keys())
+    if not common:
+        return 0.0
+    dot = sum(v1[k] * v2[k] for k in common)
+    mag1 = math.sqrt(sum(v ** 2 for v in v1.values()))
+    mag2 = math.sqrt(sum(v ** 2 for v in v2.values()))
+    if mag1 == 0 or mag2 == 0:
+        return 0.0
+    return dot / (mag1 * mag2)
+
+# --- Number extraction for factual conflicts ---
+def extract_numbers(text):
+    """Extract number-context pairs"""
+    nums = []
+    for m in re.finditer(r'(\d+(?:\.\d+)?)\s*(%|점|pt|pp|x|배|ms|s|건|개|M|K|B)?', text):
+        nums.append({"value": float(m.group(1)), "unit": m.group(2) or ""})
+    return nums
+
+# --- Detect conflicts ---
+vectors = [tfidf_vector(tokens) for tokens in all_tokens]
+conflicts = []
+
+for i in range(len(claims)):
+    for j in range(i + 1, len(claims)):
+        sim = cosine_sim(vectors[i], vectors[j])
+        if sim < threshold:
+            continue  # Not similar enough to conflict
+
+        # Similar topic — check for contradiction
+        tokens_i = all_tokens[i]
+        tokens_j = all_tokens[j]
+        polarity_i = get_polarity(tokens_i)
+        polarity_j = get_polarity(tokens_j)
+
+        conflict_type = None
+        confidence = "low"
+
+        # Negation conflict: same topic, opposite polarity
+        if polarity_i != 0 and polarity_j != 0 and polarity_i != polarity_j:
+            conflict_type = "NEGATION_CONFLICT"
+            confidence = "high" if sim > 0.6 else "medium"
+
+        # Factual conflict: same topic, different numbers
+        if not conflict_type:
+            nums_i = extract_numbers(claims[i].get("text", ""))
+            nums_j = extract_numbers(claims[j].get("text", ""))
+            for ni in nums_i:
+                for nj in nums_j:
+                    if ni["unit"] == nj["unit"] and ni["unit"] != "":
+                        if abs(ni["value"] - nj["value"]) / max(ni["value"], nj["value"], 1) > 0.2:
+                            conflict_type = "FACTUAL_CONFLICT"
+                            confidence = "high"
+                            break
+
+        # Negation words differ
+        if not conflict_type:
+            neg_i = has_negation(tokens_i)
+            neg_j = has_negation(tokens_j)
+            if neg_i != neg_j and sim > 0.5:
+                conflict_type = "NEGATION_CONFLICT"
+                confidence = "medium"
+
+        if conflict_type:
+            conflicts.append({
+                "claim_a": {"id": claims[i].get("id", f"CL-{i}"), "text": claims[i].get("text", "")[:120]},
+                "claim_b": {"id": claims[j].get("id", f"CL-{j}"), "text": claims[j].get("text", "")[:120]},
+                "source_a": claims[i].get("source", ""),
+                "source_b": claims[j].get("source", ""),
+                "conflict_type": conflict_type,
+                "similarity": round(sim, 3),
+                "confidence": confidence
+            })
+
+# Sort by confidence (high first)
+conf_order = {"high": 0, "medium": 1, "low": 2}
+conflicts.sort(key=lambda c: conf_order.get(c["confidence"], 3))
+
+print(json.dumps({
+    "conflicts": conflicts,
+    "total_claims": len(claims),
+    "conflicts_found": len(conflicts),
+    "high_confidence": sum(1 for c in conflicts if c["confidence"] == "high"),
+    "medium_confidence": sum(1 for c in conflicts if c["confidence"] == "medium")
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_report() {
+    local format="json"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --format) format="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+
+    if [ "$format" = "md" ]; then
+        python3 - "$tmpfile" << 'PYEOF'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
+
+conflicts = data.get("conflicts", [])
+if not conflicts:
+    print("## Contradiction Detection: No conflicts found ✅")
+    sys.exit(0)
+
+print(f"## Contradiction Detection: {len(conflicts)} conflict(s) found\n")
+for i, c in enumerate(conflicts, 1):
+    emoji = {"high":"🔴","medium":"🟡","low":"🟢"}.get(c["confidence"], "⚪")
+    print(f"### {emoji} Conflict {i} [{c['conflict_type']}] ({c['confidence']})")
+    print(f"- **A** ({c['claim_a']['id']}): {c['claim_a']['text']}")
+    print(f"- **B** ({c['claim_b']['id']}): {c['claim_b']['text']}")
+    print(f"- Similarity: {c['similarity']}")
+    print()
+PYEOF
+    else
+        cat "$tmpfile"
+    fi
+    rm -f "$tmpfile"
+}
+
+case "${1:-help}" in
+    detect)  shift; cmd_detect "$@" ;;
+    report)  shift; cmd_report "$@" ;;
+    help)    usage ;;
+    *)       usage ;;
+esac

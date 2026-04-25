@@ -41,10 +41,25 @@ explore_patterns = [
     r'research\s+trend', r'emerging', r'frontier', r'방향'
 ]
 
+# Compliance/audit patterns
+compliance_patterns = [
+    r'규정', r'법률', r'컴플라이언스', r'compliance', r'regulation',
+    r'audit', r'감사', r'보안', r'security', r'gdpr', r'iso',
+    r'정책', r'policy', r'legal', r'법적', r'인증', r'certif'
+]
+
+# Comparative patterns
+comparative_patterns = [
+    r'비교', r'compare', r'vs\b', r'versus', r'차이',
+    r'어떤.*좋', r'어떤.*선택', r'which\s+is\s+better',
+    r'alternative', r'대안', r'장단점', r'pros\s+and\s+cons',
+    r'trade[\s-]*off', r'선택.*기준'
+]
+
 # Default (practical solution) patterns
 practical_patterns = [
     r'구현', r'적용', r'방법', r'도구', r'솔루션',
-    r'어떤.*좋', r'추천', r'비교', r'선택',
+    r'추천', r'선택',
     r'how\s+to', r'best\s+practice', r'implement',
     r'production', r'deploy', r'setup', r'configure'
 ]
@@ -54,19 +69,34 @@ def match_count(patterns, text):
 
 poc_score = match_count(poc_patterns, query)
 explore_score = match_count(explore_patterns, query)
+compliance_score = match_count(compliance_patterns, query)
+comparative_score = match_count(comparative_patterns, query)
 practical_score = match_count(practical_patterns, query)
 
-if poc_score > explore_score and poc_score > practical_score:
+all_scores = {
+    "default": practical_score,
+    "poc": poc_score,
+    "exploration": explore_score,
+    "compliance": compliance_score,
+    "comparative": comparative_score
+}
+max_score = max(all_scores.values())
+
+if compliance_score == max_score and compliance_score > 0:
+    profile = "compliance"
+elif comparative_score == max_score and comparative_score > 0:
+    profile = "comparative"
+elif poc_score == max_score and poc_score > 0:
     profile = "poc"
-elif explore_score > poc_score and explore_score > practical_score:
+elif explore_score == max_score and explore_score > 0:
     profile = "exploration"
 else:
     profile = "default"
 
 print(json.dumps({
     "profile": profile,
-    "scores": {"default": practical_score, "poc": poc_score, "exploration": explore_score},
-    "confidence": "high" if max(poc_score, explore_score, practical_score) >= 2 else "medium" if max(poc_score, explore_score, practical_score) >= 1 else "low"
+    "scores": all_scores,
+    "confidence": "high" if max_score >= 2 else "medium" if max_score >= 1 else "low"
 }))
 PYEOF
 }

@@ -55,12 +55,28 @@ with open(sys.argv[1]) as f:
 scores = input_data['scores']
 target = input_data.get('target_score', 80)
 
-# Code metrics blending (70% code + 30% AI for recency/structure)
+# Code metrics integration
+# Structure & Coverage: 100% code (AI判断不要)
+# Recency: 70% code + 30% AI blending
 code_metrics_str = sys.argv[3] if len(sys.argv) > 3 else ''
 if code_metrics_str:
     try:
         cm = json.loads(code_metrics_str)
-        blend_dims = {'recency': 'recency_score', 'structure': 'structure_score'}
+        # 100% code dims: structure_coherence/structure, coverage
+        code_only_dims = {
+            'structure_coherence': 'structure_score',
+            'structure': 'structure_score',
+        }
+        for dim, cm_key in code_only_dims.items():
+            if dim in scores and cm_key in cm:
+                scores[dim] = round(cm[cm_key], 1)
+        # Coverage from SEA rate if available
+        if 'sea_rate' in cm:
+            for cov_dim in ('coverage',):
+                if cov_dim in scores:
+                    scores[cov_dim] = round(cm['sea_rate'], 1)
+        # 70/30 blend dims: recency only
+        blend_dims = {'recency': 'recency_score'}
         for dim, cm_key in blend_dims.items():
             if dim in scores and cm_key in cm:
                 ai_val = scores[dim]
@@ -121,13 +137,31 @@ for category in weights.values():
 if not sea_threshold:
     sea_threshold = weights.get('sea_threshold', 75)
 
+# Hard floor rule: if accuracy < threshold, cap total score
+hard_floor = None
+for category in weights.values():
+    if isinstance(category, dict) and 'hard_floor' in category:
+        hard_floor = category['hard_floor']
+if not hard_floor:
+    hard_floor = weights.get('hard_floor', None)
+
+hard_floor_applied = False
+if hard_floor and isinstance(hard_floor, dict):
+    floor_dim = list(hard_floor.keys())[0] if hard_floor else None
+    if floor_dim and floor_dim != 'cap':
+        floor_threshold = hard_floor.get(floor_dim, 0)
+        floor_cap = hard_floor.get('cap', 50)
+        if floor_dim in scores and scores[floor_dim] < floor_threshold:
+            total = min(total, floor_cap)
+            hard_floor_applied = True
+
 verdict = "PASS" if total >= target else "FAIL"
 
 # Find weakest dimensions
 sorted_dims = sorted(breakdown.items(), key=lambda x: x[1]['score'])
 fail_dimensions = [d for d, info in sorted_dims if info['score'] < 70]
 
-print(json.dumps({
+result = {
     "total": total,
     "target": target,
     "verdict": verdict,
@@ -135,7 +169,12 @@ print(json.dumps({
     "fail_dimensions": fail_dimensions,
     "weakest": sorted_dims[0][0] if sorted_dims else None,
     "missing_dimensions": missing
-}, ensure_ascii=False, indent=2))
+}
+if hard_floor_applied:
+    result["hard_floor_applied"] = True
+    result["hard_floor_reason"] = f"{floor_dim} ({scores.get(floor_dim, 0)}) < {floor_threshold} → total capped at {floor_cap}"
+
+print(json.dumps(result, ensure_ascii=False, indent=2))
 PYEOF
     rm -f "$tmpfile"
 }

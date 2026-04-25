@@ -439,6 +439,48 @@ ${PLUGIN_DIR}/bin/dr-preprocess run \
 
 ---
 
+## Phase 3.6: 코드 메트릭 Hard-Reject 게이트 (AI 호출 0)
+
+**SOTA 근거**: Confident AI (2026) — 결정론적 사전 필터로 명백 실패를 LLM 평가 전에 차단
+
+Phase 3.5 코드 메트릭으로 명백히 실패하는 리서치를 Evaluator 호출 없이 즉시 거부합니다:
+
+```
+hard_reject = false
+reject_reasons = []
+
+if code_metrics.diversity_entropy < 0.5 AND code_metrics.unique_domains < 3:
+    reject_reasons.append("소스 다양성 극히 부족 (도메인 3개 미만)")
+    hard_reject = true
+
+if code_metrics.recency_score < 10:
+    reject_reasons.append("최신성 극히 부족 (최근 2년 소스 거의 없음)")
+    hard_reject = true
+
+if code_metrics.structure_score < 5:
+    reject_reasons.append("구조 없음 (섹션/제목 미감지)")
+    hard_reject = true
+
+if code_metrics.word_count < 200:
+    reject_reasons.append("분량 극히 부족 (200단어 미만)")
+    hard_reject = true
+```
+
+**hard_reject = true**이면:
+- Evaluator 호출 **생략** (Opus 토큰 절약)
+- 사용자에게 거부 사유 알림
+- Phase 3C 심화 검색으로 직접 이동 (보완 후 재검증)
+
+```
+[Hard-Reject] 코드 메트릭 기준 미달 — Evaluator 생략
+  사유: {reject_reasons}
+  → 보완 Worker 실행 후 재검증
+```
+
+**hard_reject = false**이면 Phase 4로 정상 진행.
+
+---
+
 ## Phase 4: EVALUATE (Verifier)
 
 ### 반복 카운터 + 점수 이력
@@ -484,6 +526,14 @@ SEA 체크리스트: {sea_checklist}
 **반드시 아래 차원명으로 scores를 반환해주세요** (rubric 가중치와 정확히 일치해야 함):
 {rubric_dimension_names}
 
+**코드 위임 차원** (AI 채점 불필요 — dr-score가 코드로 계산):
+- structure_coherence: dr-score structure 결과 100% 사용
+- coverage: SEA 충족률(dr-score sea)을 점수로 직접 변환
+→ 이 차원들은 scores에 포함하되, 코드 값이 덮어씁니다.
+
+**토큰 예산**: 각 차원의 rationale은 **2문장 이하**로 작성합니다.
+점수와 핵심 근거만 간결하게 — 장문 서술은 토큰 낭비입니다.
+
 외부 검증 결과 (코드 실행):
 - 중복 제거: {dedup_result}
 - 소스 등급 사전분류: {classify_result}
@@ -515,11 +565,14 @@ echo '{evaluator_scores_json}' | ${PLUGIN_DIR}/bin/dr-score calc --rubric {rubri
 
 **SOTA 근거**: Autorubric (arXiv 2603.00077), SSRN 3-run 연구 — 다중 판사가 단일 판사보다 일관적으로 우수. 3-run이 단일 최고 ROI.
 
-**모든 depth에서** Evaluator를 **2회 독립 실행** 후 점수 평균:
-1. 1차 Evaluator 실행 (독립 컨텍스트, **셔플된 findings** 전달)
-2. 2차 Evaluator 실행 (독립 컨텍스트, 1차 결과 미전달, **역순 findings** 전달)
-3. 차원별 점수 평균 계산 (코드: `dr-score calc`)
-4. 두 판사 간 점수 차 > 15인 차원은 `[평가 불일치]` 플래그 → 사용자에게 보고
+**모든 depth에서** Evaluator를 **2회 병렬 독립 실행** 후 점수 평균:
+1. 1차 + 2차 Evaluator를 **동시에 Agent 도구로 병렬 호출** (독립 컨텍스트)
+   - 1차: **셔플된 findings** 전달
+   - 2차: **역순 findings** 전달 (1차 결과 미전달)
+2. 양쪽 완료 후 차원별 점수 평균 계산 (코드: `dr-score calc`)
+3. 두 판사 간 점수 차 > 15인 차원은 `[평가 불일치]` 플래그 → 사용자에게 보고
+
+**병렬 실행으로 벽시계 시간 50% 절감** (60-120s → 30-60s)
 
 **depth=deep**이면 **3회** 실행 (2회 + 추가 1회 랜덤 순서).
 **P0-1 압축 적용으로 앙상블 추가 비용이 상쇄됨** (압축 40-60% 절감 > 앙상블 2x 비용).

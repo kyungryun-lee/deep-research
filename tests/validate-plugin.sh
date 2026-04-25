@@ -283,15 +283,17 @@ STRUCT_OUT=$(printf '# Title\n## A\nContent.\n## B\nMore.\n' | "$PLUGIN_DIR/bin/
 echo "$STRUCT_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'structure_score' in d and d['headings']['h2']==2" 2>/dev/null && pass "dr-score structure works" || fail "dr-score structure failed"
 
 # dr-score calc blending test
-BLEND_OUT=$(echo '{"scores":{"accuracy":80,"coverage":80,"recency":70,"structure":80,"proven":80,"actionability":80,"efficiency":80,"env_fit":80},"target_score":80}' | "$PLUGIN_DIR/bin/dr-score" calc --rubric "$PLUGIN_DIR/skills/research/rubrics/default.md" --code-metrics '{"recency_score":90,"structure_score":60}' 2>/dev/null)
+BLEND_OUT=$(echo '{"scores":{"accuracy":80,"coverage":80,"recency":70,"structure_coherence":80,"proven":80,"actionability":80,"efficiency":80,"env_fit":80,"citation_quality":80,"depth":80},"target_score":80}' | "$PLUGIN_DIR/bin/dr-score" calc --rubric "$PLUGIN_DIR/skills/research/rubrics/default.md" --code-metrics '{"recency_score":90,"structure_score":60,"sea_rate":85}' 2>/dev/null)
 echo "$BLEND_OUT" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 # recency should be blended: 0.7*90 + 0.3*70 = 84
 assert abs(d['breakdown']['recency']['score'] - 84) < 1, f'recency={d[\"breakdown\"][\"recency\"][\"score\"]}'
-# structure should be blended: 0.7*60 + 0.3*80 = 66
-assert abs(d['breakdown']['structure']['score'] - 66) < 1, f'structure={d[\"breakdown\"][\"structure\"][\"score\"]}'
-" 2>/dev/null && pass "dr-score calc blending works" || fail "dr-score calc blending failed"
+# structure_coherence should be 100% code: 60
+assert abs(d['breakdown']['structure_coherence']['score'] - 60) < 1, f'structure={d[\"breakdown\"][\"structure_coherence\"][\"score\"]}'
+# coverage should be 100% code: 85 (sea_rate)
+assert abs(d['breakdown']['coverage']['score'] - 85) < 1, f'coverage={d[\"breakdown\"][\"coverage\"][\"score\"]}'
+" 2>/dev/null && pass "dr-score calc blending+code-only works" || fail "dr-score calc blending failed"
 
 # dr-consistency executable
 [ -x "$PLUGIN_DIR/bin/dr-consistency" ] && pass "dr-consistency is executable" || fail "dr-consistency not executable"
@@ -532,7 +534,7 @@ if grep -q "모순 탐지" "$PLUGIN_DIR/skills/research/SKILL.md" || grep -q "dr
 else
     fail "SKILL.md missing contradiction detection"
 fi
-if grep -q "모든 depth에서" "$PLUGIN_DIR/skills/research/SKILL.md" && grep -q "2회 독립 실행" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+if grep -q "모든 depth에서" "$PLUGIN_DIR/skills/research/SKILL.md" && grep -q "병렬 독립 실행" "$PLUGIN_DIR/skills/research/SKILL.md"; then
     pass "SKILL.md has 2-run ensemble for all depths"
 else
     fail "SKILL.md missing all-depth ensemble"
@@ -563,6 +565,121 @@ import json,sys
 d=json.load(sys.stdin)
 assert d['total'] == 2
 " 2>/dev/null && pass "dr-cite-check check-urls works" || fail "dr-cite-check check-urls failed"
+
+# --- 15. v2.5.1 Evaluation Optimization ---
+echo ""
+echo "[15] v2.5.1 Evaluation Optimization"
+
+# E1: default rubric has accuracy 0.20 + hard_floor
+python3 -c "
+import json, re
+with open('$PLUGIN_DIR/skills/research/rubrics/default.md') as f:
+    m = re.search(r'\`\`\`json\s*\n({.*?})\s*\n\`\`\`', f.read(), re.DOTALL)
+    w = json.loads(m.group(1))
+    assert w['core']['accuracy'] == 0.20, f'accuracy={w[\"core\"][\"accuracy\"]}'
+    assert 'hard_floor' in w, 'missing hard_floor'
+    assert w['hard_floor']['accuracy'] == 40
+" 2>/dev/null && pass "default rubric: accuracy=0.20 + hard_floor" || fail "default rubric weight incorrect"
+
+# E2: default rubric has new dimensions
+python3 -c "
+import json, re
+with open('$PLUGIN_DIR/skills/research/rubrics/default.md') as f:
+    m = re.search(r'\`\`\`json\s*\n({.*?})\s*\n\`\`\`', f.read(), re.DOTALL)
+    w = json.loads(m.group(1))
+    assert 'citation_quality' in w['context'], 'missing citation_quality'
+    assert 'depth' in w['context'], 'missing depth'
+    assert 'structure_coherence' in w['core'], 'missing structure_coherence'
+" 2>/dev/null && pass "default rubric: citation_quality + depth + structure_coherence" || fail "default rubric missing new dims"
+
+# E3: dr-score calc hard floor test
+FLOOR_OUT=$(echo '{"scores":{"accuracy":30,"coverage":80,"recency":80,"structure_coherence":85,"proven":80,"actionability":80,"efficiency":80,"env_fit":80,"citation_quality":80,"depth":80},"target_score":80}' | "$PLUGIN_DIR/bin/dr-score" calc --rubric "$PLUGIN_DIR/skills/research/rubrics/default.md" 2>/dev/null)
+echo "$FLOOR_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('hard_floor_applied') == True, f'hard floor not applied: {d}'
+assert d['total'] <= 50, f'total should be capped at 50: {d[\"total\"]}'
+" 2>/dev/null && pass "dr-score calc hard floor works (accuracy<40 → cap 50)" || fail "dr-score calc hard floor failed"
+
+# E4: dr-score calc code-only structure (no AI blend)
+CODE_STRUCT_OUT=$(echo '{"scores":{"accuracy":80,"coverage":80,"recency":80,"structure_coherence":50,"proven":80,"actionability":80,"efficiency":80,"env_fit":80,"citation_quality":80,"depth":80},"target_score":80}' | "$PLUGIN_DIR/bin/dr-score" calc --rubric "$PLUGIN_DIR/skills/research/rubrics/default.md" --code-metrics '{"structure_score":90,"sea_rate":85}' 2>/dev/null)
+echo "$CODE_STRUCT_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+# structure_coherence should be 100% code: 90 (not blended)
+assert d['breakdown']['structure_coherence']['score'] == 90, f'structure={d[\"breakdown\"][\"structure_coherence\"][\"score\"]}'
+# coverage should be 100% code: 85 (sea_rate)
+assert d['breakdown']['coverage']['score'] == 85, f'coverage={d[\"breakdown\"][\"coverage\"][\"score\"]}'
+" 2>/dev/null && pass "dr-score calc: structure/coverage 100% code" || fail "dr-score calc code-only dims failed"
+
+# E5: new rubric profiles exist
+for rubric in compliance comparative; do
+    [ -f "$PLUGIN_DIR/skills/research/rubrics/$rubric.md" ] && pass "rubrics/$rubric.md exists" || fail "rubrics/$rubric.md missing"
+done
+
+# E6: new profiles have JSON weight blocks
+for rubric in compliance comparative; do
+    if grep -q '"core"' "$PLUGIN_DIR/skills/research/rubrics/$rubric.md"; then
+        pass "$rubric.md has JSON weight block"
+    else
+        fail "$rubric.md missing JSON weight block"
+    fi
+done
+
+# E7: new profiles have calibration anchors
+for rubric in compliance comparative; do
+    if grep -q "점수 30 예시" "$PLUGIN_DIR/skills/research/rubrics/$rubric.md"; then
+        pass "$rubric.md has 30-point calibration anchor"
+    else
+        fail "$rubric.md missing 30-point anchor"
+    fi
+done
+
+# E8: dr-classify detects new profiles
+CLASSIFY_COMP=$("$PLUGIN_DIR/bin/dr-classify" profile "GDPR 규정 compliance 감사" 2>/dev/null)
+echo "$CLASSIFY_COMP" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['profile']=='compliance', f'expected compliance: {d}'" 2>/dev/null && pass "dr-classify compliance profile works" || fail "dr-classify compliance failed"
+
+CLASSIFY_COMPARE=$("$PLUGIN_DIR/bin/dr-classify" profile "React vs Vue vs Angular 비교 분석" 2>/dev/null)
+echo "$CLASSIFY_COMPARE" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['profile']=='comparative', f'expected comparative: {d}'" 2>/dev/null && pass "dr-classify comparative profile works" || fail "dr-classify comparative failed"
+
+# E9: SKILL.md has hard-reject gate
+if grep -q "Hard-Reject 게이트" "$PLUGIN_DIR/skills/research/SKILL.md" || grep -q "hard_reject" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has hard-reject gate"
+else
+    fail "SKILL.md missing hard-reject gate"
+fi
+
+# E10: SKILL.md has evaluator parallel execution
+if grep -q "병렬 호출" "$PLUGIN_DIR/skills/research/SKILL.md" && grep -q "벽시계 시간 50%" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has parallel evaluator execution"
+else
+    fail "SKILL.md missing parallel evaluator"
+fi
+
+# E11: Evaluator has token budget rule
+if grep -q "토큰 예산" "$PLUGIN_DIR/agents/research-evaluator.md"; then
+    pass "Evaluator has token budget rule"
+else
+    fail "Evaluator missing token budget"
+fi
+
+# E12: Evaluator has hard floor rule
+if grep -q "Hard Floor" "$PLUGIN_DIR/agents/research-evaluator.md"; then
+    pass "Evaluator has hard floor warning rule"
+else
+    fail "Evaluator missing hard floor rule"
+fi
+
+# E13: default rubric weights sum to ~1.0
+python3 -c "
+import json, re
+with open('$PLUGIN_DIR/skills/research/rubrics/default.md') as f:
+    m = re.search(r'\`\`\`json\s*\n({.*?})\s*\n\`\`\`', f.read(), re.DOTALL)
+    w = json.loads(m.group(1))
+    skip_keys = {'sea_threshold', 'hard_floor'}
+    total = sum(v for k, cat in w.items() if isinstance(cat, dict) and k not in skip_keys for v in cat.values() if isinstance(v, (int, float)))
+    assert abs(total - 1.0) < 0.02, f'weights sum to {total}, expected ~1.0'
+" 2>/dev/null && pass "default rubric weights sum to ~1.0" || fail "default rubric weights don't sum to 1.0"
 
 # --- Summary ---
 echo ""

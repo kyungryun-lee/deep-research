@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# dr-research — One-click Deep Research launcher
+#
+# Usage:
+#   dr-research "query"                          # Standard research
+#   dr-research "query" --depth deep             # Deep research
+#   dr-research "query" --dry-run                # Estimate cost/plan, no API calls
+#   dr-research "query" --dry-run --depth deep   # Dry-run with deep depth
+#   dr-research "query" --rubric poc             # PoC rubric
+#   dr-research "query" --mode full-pipeline     # Full pipeline
+#   dr-research --help                           # Show help
+#
+# One-click shortcut: wraps /deep-research:research with sane defaults
+# and adds --dry-run mode for cost-free planning.
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+DATA_DIR="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}"
+
+usage() {
+    cat <<'EOF'
+dr-research — One-click Deep Research launcher
+
+Usage:
+  dr-research "query" [options]
+
+Options:
+  --depth <surface|standard|deep>   Research depth (default: standard)
+  --rubric <default|poc|exploration|compliance|comparative>
+                                    Evaluation rubric (default: default)
+  --mode <research-only|full-pipeline>
+                                    Execution mode (default: research-only)
+  --output <path>                   Report output path
+  --dry-run                         Estimate cost and plan WITHOUT running research
+  --help                            Show this help
+
+Dry-run mode:
+  Runs dr-tokens estimate + dr-classify to show:
+    - Estimated API cost and token breakdown
+    - Research profile (type, complexity, worker count)
+    - Normalized query and cache hit status
+  No workers, evaluators, or synthesizers are launched.
+  No API charges incurred beyond the estimate tool itself (no LLM calls).
+
+Examples:
+  dr-research "Claude Code context fork best practices 2026"
+  dr-research "React vs Vue 2026" --rubric comparative --depth deep
+  dr-research "GDPR audit checklist" --rubric compliance --dry-run
+EOF
+}
+
+# --- Parse arguments ---
+QUERY=""
+DEPTH="standard"
+RUBRIC="default"
+MODE="research-only"
+OUTPUT=""
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)   usage; exit 0 ;;
+        --depth)     DEPTH="$2"; shift 2 ;;
+        --rubric)    RUBRIC="$2"; shift 2 ;;
+        --mode)      MODE="$2"; shift 2 ;;
+        --output)    OUTPUT="$2"; shift 2 ;;
+        --dry-run)   DRY_RUN=true; shift ;;
+        -*)          echo "Unknown option: $1" >&2; usage; exit 1 ;;
+        *)
+            if [[ -z "$QUERY" ]]; then
+                QUERY="$1"
+            else
+                QUERY="$QUERY $1"
+            fi
+            shift ;;
+    esac
+done
+
+if [[ -z "$QUERY" ]]; then
+    echo "Error: query is required" >&2
+    usage
+    exit 1
+fi
+
+# --- Dry-run mode: estimate cost + classify, no LLM calls ---
+if [[ "$DRY_RUN" = true ]]; then
+    echo ""
+    echo "=== Deep Research Dry-Run ==="
+    echo "Query: $QUERY"
+    echo "Depth: $DEPTH | Rubric: $RUBRIC | Mode: $MODE"
+    echo ""
+
+    # 1. Query normalization
+    echo "[1/4] Normalizing query..."
+    NORM_RESULT=$("${PLUGIN_DIR}/bin/dr-normalize" normalize "$QUERY" 2>/dev/null || echo '{}')
+    NORMALIZED=$(echo "$NORM_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('normalized', '$QUERY'))" 2>/dev/null || echo "$QUERY")
+    CACHE_KEY=$(echo "$NORM_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('cache_key', 'n/a'))" 2>/dev/null || echo "n/a")
+    echo "  Normalized: $NORMALIZED"
+    echo "  Cache key:  $CACHE_KEY"
+
+    # 2. Cache check
+    echo ""
+    echo "[2/4] Checking query cache (24h TTL)..."
+    CACHE_RESULT=$("${PLUGIN_DIR}/bin/dr-cache" load-query "$QUERY" 2>/dev/null || echo '{"hit":false}')
+    CACHE_HIT=$(echo "$CACHE_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print('YES' if d.get('hit') else 'NO')" 2>/dev/null || echo "NO")
+    if [[ "$CACHE_HIT" = "YES" ]]; then
+        CACHED_SOURCES=$(echo "$CACHE_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('urls', [])))" 2>/dev/null || echo "?")
+        echo "  Cache: HIT — $CACHED_SOURCES cached sources available (would skip re-fetch)"
+    else
+        echo "  Cache: MISS — full research run required"
+    fi
+
+    # 3. Query classification
+    echo ""
+    echo "[3/4] Classifying query..."
+    CLASSIFY_RESULT=$("${PLUGIN_DIR}/bin/dr-classify" all "$QUERY" "$DEPTH" 2>/dev/null || echo '{}')
+    PROFILE=$(echo "$CLASSIFY_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('profile', 'default'))" 2>/dev/null || echo "default")
+    COMPLEXITY=$(echo "$CLASSIFY_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('complexity', '?'))" 2>/dev/null || echo "?")
+    WORKERS=$(echo "$CLASSIFY_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('workers', '?'))" 2>/dev/null || echo "?")
+    RECENCY=$(echo "$CLASSIFY_RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('recency', 'any'))" 2>/dev/null || echo "any")
+    echo "  Profile:    $PROFILE → rubric override: $RUBRIC"
+    echo "  Complexity: $COMPLEXITY | Workers: $WORKERS | Recency req: $RECENCY"
+
+    # 4. Token/cost estimate
+    echo ""
+    echo "[4/4] Estimating cost..."
+    ESTIMATE=$("${PLUGIN_DIR}/bin/dr-tokens" estimate --query "$QUERY" --depth "$DEPTH" 2>/dev/null || echo '{}')
+    TOTAL_COST=$(echo "$ESTIMATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('estimated_total_cost_usd', '?'))" 2>/dev/null || echo "?")
+    BATCH_COST=$(echo "$ESTIMATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('estimated_batch_cost_usd', '?'))" 2>/dev/null || echo "?")
+
+    # Phase breakdown
+    echo "$ESTIMATE" | python3 - << 'PYEOF' 2>/dev/null || true
+import json, sys
+d = json.load(sys.stdin)
+breakdown = d.get("breakdown", {})
+if breakdown:
+    print("  Phase breakdown:")
+    for phase, info in breakdown.items():
+        print(f"    {phase:<12} {info['model']:<8} ~${info['est_cost_usd']:.4f}")
+PYEOF
+
+    echo ""
+    echo "--- Cost Summary ---"
+    echo "  Estimated real-time cost: \$$TOTAL_COST"
+    echo "  Estimated Batch API cost: \$$BATCH_COST  (50% off, use --batch true)"
+    if [[ "$CACHE_HIT" = "YES" ]]; then
+        echo "  Cache hit: source re-fetch skipped → actual cost may be lower"
+    fi
+    echo ""
+    echo "--- To run for real ---"
+    RUN_CMD="/deep-research:research \"$QUERY\" --depth $DEPTH --rubric $RUBRIC --mode $MODE"
+    [[ -n "$OUTPUT" ]] && RUN_CMD="$RUN_CMD --output \"$OUTPUT\""
+    echo "  $RUN_CMD"
+    echo ""
+    echo "(Dry-run complete. No API charges incurred.)"
+    exit 0
+fi
+
+# --- Real run: output the slash command for Claude Code to execute ---
+# This script is intended to be called from the terminal or from a SKILL.
+# It prints the constructed command and exits; the caller (SKILL or user) runs it in Claude.
+
+CMD_ARGS="\"$QUERY\" --depth $DEPTH --rubric $RUBRIC --mode $MODE"
+[[ -n "$OUTPUT" ]] && CMD_ARGS="$CMD_ARGS --output \"$OUTPUT\""
+
+echo ""
+echo "=== Deep Research Launch ==="
+echo "Query:   $QUERY"
+echo "Depth:   $DEPTH | Rubric: $RUBRIC | Mode: $MODE"
+[[ -n "$OUTPUT" ]] && echo "Output:  $OUTPUT"
+echo ""
+echo "Run this in Claude Code:"
+echo "  /deep-research:research $CMD_ARGS"
+echo ""
+echo "Or use --dry-run first to estimate cost:"
+echo "  dr-research \"$QUERY\" --depth $DEPTH --dry-run"

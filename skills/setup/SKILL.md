@@ -25,6 +25,28 @@ argument-hint: "[check | configure | reset]"
 
 아래 항목을 순서대로 점검하고 결과를 표로 출력합니다.
 
+### 0. 자동 의존성 점검 (신규)
+
+아래 명령을 **자동으로 실행**하여 필수 의존성을 점검합니다:
+
+```bash
+# Python3 버전 및 필수 모듈
+python3 --version 2>/dev/null && python3 -c "import json, re, math, collections, hashlib" 2>/dev/null && echo "PYTHON_OK" || echo "PYTHON_FAIL"
+
+# md5sum (캐시 해시에 사용)
+md5sum --version >/dev/null 2>&1 && echo "MD5_OK" || md5sum /dev/null >/dev/null 2>&1 && echo "MD5_OK" || echo "MD5_FAIL"
+
+# bin/ 스크립트 실행 권한
+for BIN in dr-tokens dr-cache dr-classify dr-normalize dr-score dr-verify dr-knowledge; do
+  [ -x "${CLAUDE_PLUGIN_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}/bin/$BIN" ] && echo "$BIN: OK" || echo "$BIN: NOT EXECUTABLE"
+done
+```
+
+점검 결과 처리:
+- `PYTHON_FAIL`: FAIL + `brew install python3` 또는 `apt install python3` 안내
+- `MD5_FAIL`: WARN + macOS에서 `md5 -r` 대안 안내 (md5sum은 GNU coreutils 필요)
+- `NOT EXECUTABLE`: FAIL + `chmod +x bin/{name}` 명령 안내
+
 ### 1. Claude Code 버전 확인
 ```bash
 claude --version

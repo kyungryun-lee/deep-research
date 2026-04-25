@@ -52,7 +52,7 @@ ${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-
 출력:
 1. 쿼리 정규화 + 캐시 히트 여부
 2. 자동 분류 결과 (프로필, 복잡도, 예상 Worker 수)
-3. 예상 비용 (실시간 vs Batch API)
+3. 예상 비용
 4. 실제 실행에 필요한 명령어
 
 **dry-run은 API 비용을 발생시키지 않습니다.** 실제 리서치를 시작하기 전 비용을 확인할 때 사용합니다.
@@ -89,7 +89,6 @@ ${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-
 - **KPR/KPC 정합성**: dr-score kpr-kpc (Key-point Recall/Contradiction)
 - **Knowledge 진화**: dr-knowledge evolve (A-Mem 자동 크로스링크)
 - **토큰 대시보드**: dr-tokens record/report/estimate (Phase별 토큰+비용 추적)
-- **Batch API**: dr-batch create/status/results (50% 할인, 비긴급 Worker 병렬)
 - 세션 기록: dr-memory save
 - **소스 등급 사전분류**: dr-verify classify (도메인 화이트리스트, AI 80% 감소)
 - **URL 유효성 검증**: dr-verify check-urls (HTTP HEAD, AI WebFetch 대체)
@@ -98,12 +97,6 @@ ${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-
 - **Plateau 감지**: dr-score plateau (적응적 종료 판단)
 
 AI 추론 (LLM 필수): 전략 수립, 검색 쿼리 생성, 정보 분석/판단, 차원별 품질 채점, 종합 서술, C등급 소스 정밀 분류
-
-### Batch API 사용 기준 (50% 비용 절감)
-- **사용 조건**: 긴급하지 않은 리서치, `--depth deep`, 대량 평가
-- **사용 불가**: 실시간 대화형 리서치, `--depth surface`
-- Batch API는 24시간 내 결과 반환 (보통 <1시간)
-- Batch 모드 지정: `--batch true` (기본: 실시간)
 
 ### 평가 최적화
 - Differential 평가: 2회차+ 보완 시 FAIL된 차원만 재평가 (50%+ 토큰 절감)
@@ -744,7 +737,7 @@ ${PLUGIN_DIR}/bin/dr-tokens report --session $SESSION_ID
 사용자에게 토큰 요약을 알립니다:
 ```
 [Token Usage] 총 {total_tokens}토큰, 비용 ${cost_usd}
-  최대 Phase: {phase} ({pct}%) | Batch API 절감 가능: ${savings}
+  최대 Phase: {phase} ({pct}%)
 ```
 
 **mode가 "research-only"이면 여기서 종료합니다.**

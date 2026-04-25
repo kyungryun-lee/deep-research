@@ -49,9 +49,9 @@ cmd_run() {
     echo ""
 
     # --- B1: Tool Chain Integrity ---
-    echo "[B1] Tool Chain (15 tools)"
+    echo "[B1] Tool Chain (14 tools)"
     local tool_count=0
-    for tool in dr-batch dr-cache dr-cite-check dr-classify dr-compress dr-consistency dr-contradict dr-dedup dr-knowledge dr-memory dr-normalize dr-preprocess dr-score dr-tokens dr-verify; do
+    for tool in dr-cache dr-cite-check dr-classify dr-compress dr-consistency dr-contradict dr-dedup dr-knowledge dr-memory dr-normalize dr-preprocess dr-score dr-tokens dr-verify; do
         if [ -x "$PLUGIN_DIR/bin/$tool" ]; then
             tool_count=$((tool_count+1))
         else

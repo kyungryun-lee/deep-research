@@ -93,7 +93,6 @@ d = json.load(sys.stdin)
 total_tokens = sum(p.get('est_input',0)+p.get('est_output',0) for p in d.get('breakdown',{}).values() if isinstance(p,dict))
 print(f'  Estimated tokens: {total_tokens:,}')
 print(f'  Estimated cost: \${d[\"estimated_total_cost_usd\"]:.3f}')
-print(f'  Batch API cost: \${d[\"estimated_batch_cost_usd\"]:.3f} (50% savings)')
 print(f'  Depth: {d.get(\"depth\", \"N/A\")}')
 "
 

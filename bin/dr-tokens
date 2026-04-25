@@ -27,9 +27,9 @@ Commands:
   help                        Show this help
 
 Pricing (per 1M tokens):
-  opus   input: $15  output: $75  (batch: $7.50/$37.50)
-  sonnet input: $3   output: $15  (batch: $1.50/$7.50)
-  haiku  input: $1   output: $5   (batch: $0.50/$2.50)
+  opus   input: $15  output: $75
+  sonnet input: $3   output: $15
+  haiku  input: $1   output: $5
 EOF
 }
 
@@ -56,9 +56,9 @@ import json
 from datetime import datetime
 
 PRICING = {
-    "opus":   {"input": 15.0,  "output": 75.0,  "batch_input": 7.5,   "batch_output": 37.5},
-    "sonnet": {"input": 3.0,   "output": 15.0,  "batch_input": 1.5,   "batch_output": 7.5},
-    "haiku":  {"input": 1.0,   "output": 5.0,   "batch_input": 0.5,   "batch_output": 2.5},
+    "opus":   {"input": 15.0,  "output": 75.0},
+    "sonnet": {"input": 3.0,   "output": 15.0},
+    "haiku":  {"input": 1.0,   "output": 5.0},
 }
 
 phase = "$phase"
@@ -71,8 +71,6 @@ prices = PRICING.get(model, PRICING["sonnet"])
 cost_input = input_t / 1_000_000 * prices["input"]
 cost_output = output_t / 1_000_000 * prices["output"]
 cost_total = cost_input + cost_output
-batch_cost = input_t / 1_000_000 * prices["batch_input"] + output_t / 1_000_000 * prices["batch_output"]
-
 entry = {
     "timestamp": datetime.now().isoformat(),
     "session": session,
@@ -81,9 +79,7 @@ entry = {
     "input_tokens": input_t,
     "output_tokens": output_t,
     "total_tokens": input_t + output_t,
-    "cost_usd": round(cost_total, 4),
-    "batch_cost_usd": round(batch_cost, 4),
-    "savings_if_batch": round(cost_total - batch_cost, 4)
+    "cost_usd": round(cost_total, 4)
 }
 
 log_path = "$TOKEN_DIR/usage.jsonl"
@@ -140,11 +136,10 @@ phases = {}
 for e in session_entries:
     p = e["phase"]
     if p not in phases:
-        phases[p] = {"input": 0, "output": 0, "cost": 0, "batch_cost": 0, "calls": 0, "models": set()}
+        phases[p] = {"input": 0, "output": 0, "cost": 0, "calls": 0, "models": set()}
     phases[p]["input"] += e["input_tokens"]
     phases[p]["output"] += e["output_tokens"]
     phases[p]["cost"] += e["cost_usd"]
-    phases[p]["batch_cost"] += e["batch_cost_usd"]
     phases[p]["calls"] += 1
     phases[p]["models"].add(e["model"])
 
@@ -162,25 +157,19 @@ for e in session_entries:
 total_input = sum(e["input_tokens"] for e in session_entries)
 total_output = sum(e["output_tokens"] for e in session_entries)
 total_cost = sum(e["cost_usd"] for e in session_entries)
-total_batch_cost = sum(e["batch_cost_usd"] for e in session_entries)
-
 report = {
     "session": target_session,
     "total": {
         "input_tokens": total_input,
         "output_tokens": total_output,
         "total_tokens": total_input + total_output,
-        "cost_usd": round(total_cost, 4),
-        "batch_cost_usd": round(total_batch_cost, 4),
-        "potential_savings_usd": round(total_cost - total_batch_cost, 4),
-        "potential_savings_pct": round((1 - total_batch_cost / total_cost) * 100, 1) if total_cost > 0 else 0
+        "cost_usd": round(total_cost, 4)
     },
     "by_phase": {
         p: {
             "input_tokens": d["input"],
             "output_tokens": d["output"],
             "cost_usd": round(d["cost"], 4),
-            "batch_cost_usd": round(d["batch_cost"], 4),
             "calls": d["calls"],
             "models": sorted(d["models"]),
             "pct_of_total": round(d["cost"] / total_cost * 100, 1) if total_cost > 0 else 0
@@ -204,7 +193,7 @@ report = {
 most_expensive_phase = max(phases.items(), key=lambda x: x[1]["cost"])
 if most_expensive_phase[1]["cost"] > total_cost * 0.4:
     report["optimization_hints"].append(
-        f"{most_expensive_phase[0]} accounts for {round(most_expensive_phase[1]['cost']/total_cost*100)}% of cost — consider batch API or model downgrade"
+        f"{most_expensive_phase[0]} accounts for {round(most_expensive_phase[1]['cost']/total_cost*100)}% of cost — consider model downgrade or output length reduction"
     )
 
 for p, d in phases.items():
@@ -212,11 +201,6 @@ for p, d in phases.items():
         report["optimization_hints"].append(
             f"{p}: output/input ratio is {d['output']/d['input']:.1f}x — consider constraining output length"
         )
-
-if total_cost > 1.0:
-    report["optimization_hints"].append(
-        f"Batch API would save ${round(total_cost - total_batch_cost, 2)} ({report['total']['potential_savings_pct']}%)"
-    )
 
 print(json.dumps(report, ensure_ascii=False, indent=2))
 PYEOF
@@ -320,7 +304,6 @@ for phase, info in phases.items():
 print(json.dumps({
     "depth": depth,
     "estimated_total_cost_usd": round(total_cost, 4),
-    "estimated_batch_cost_usd": round(total_cost * 0.5, 4),
     "breakdown": breakdown,
     "note": "Estimates based on typical research runs. Actual usage varies by topic complexity."
 }, ensure_ascii=False, indent=2))

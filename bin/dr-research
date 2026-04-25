@@ -127,8 +127,6 @@ if [[ "$DRY_RUN" = true ]]; then
     echo "[4/4] Estimating cost..."
     ESTIMATE=$("${PLUGIN_DIR}/bin/dr-tokens" estimate --query "$QUERY" --depth "$DEPTH" 2>/dev/null || echo '{}')
     TOTAL_COST=$(echo "$ESTIMATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('estimated_total_cost_usd', '?'))" 2>/dev/null || echo "?")
-    BATCH_COST=$(echo "$ESTIMATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('estimated_batch_cost_usd', '?'))" 2>/dev/null || echo "?")
-
     # Phase breakdown
     echo "$ESTIMATE" | python3 - << 'PYEOF' 2>/dev/null || true
 import json, sys
@@ -142,8 +140,7 @@ PYEOF
 
     echo ""
     echo "--- Cost Summary ---"
-    echo "  Estimated real-time cost: \$$TOTAL_COST"
-    echo "  Estimated Batch API cost: \$$BATCH_COST  (50% off, use --batch true)"
+    echo "  Estimated cost: \$$TOTAL_COST"
     if [[ "$CACHE_HIT" = "YES" ]]; then
         echo "  Cache hit: source re-fetch skipped → actual cost may be lower"
     fi

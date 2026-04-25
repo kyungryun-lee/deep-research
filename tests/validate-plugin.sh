@@ -332,7 +332,7 @@ d=json.load(sys.stdin)
 assert d['session']=='$TEST_SESSION'
 assert d['total']['input_tokens']==25000
 assert d['total']['output_tokens']==7000
-assert d['total']['potential_savings_pct']==50.0
+assert d['total']['cost_usd'] > 0
 assert 'planner' in d['by_phase'] and 'evaluator' in d['by_phase']
 " 2>/dev/null && pass "dr-tokens record+report works" || fail "dr-tokens record+report failed"
 
@@ -343,18 +343,11 @@ import json,sys
 d=json.load(sys.stdin)
 assert d['depth']=='standard'
 assert d['estimated_total_cost_usd'] > 0
-assert d['estimated_batch_cost_usd'] < d['estimated_total_cost_usd']
+assert d['estimated_total_cost_usd'] > 0
 " 2>/dev/null && pass "dr-tokens estimate works" || fail "dr-tokens estimate failed"
 
 # Cleanup test token data
 sed -i "/$TEST_SESSION/d" "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/tokens/usage.jsonl" 2>/dev/null || true
-
-# dr-batch executable
-[ -x "$PLUGIN_DIR/bin/dr-batch" ] && pass "dr-batch is executable" || fail "dr-batch not executable"
-
-# dr-batch list test (no API key needed)
-BATCH_LIST=$("$PLUGIN_DIR/bin/dr-batch" list 2>/dev/null)
-echo "$BATCH_LIST" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'total' in d" 2>/dev/null && pass "dr-batch list works" || fail "dr-batch list failed"
 
 # dr-cache semantic-match test
 # First save a cache entry
@@ -384,11 +377,7 @@ if grep -q "토큰 대시보드" "$PLUGIN_DIR/skills/research/SKILL.md"; then
 else
     fail "SKILL.md missing token dashboard"
 fi
-if grep -q "Batch API" "$PLUGIN_DIR/skills/research/SKILL.md"; then
-    pass "SKILL.md has Batch API"
-else
-    fail "SKILL.md missing Batch API"
-fi
+# Batch API removed (not available in current environment)
 
 # --- 13. Meta-Research Improvements (P0-P2) ---
 echo ""

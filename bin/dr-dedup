@@ -24,14 +24,16 @@ EOF
 }
 
 cmd_urls() {
-    local input
-    input=$(cat)
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
 
-    python3 << PYEOF
-import json, re
+    python3 - "$tmpfile" << 'PYEOF'
+import json, re, sys
 from urllib.parse import urlparse, urlunparse
 
-urls = json.loads('''$input''')
+with open(sys.argv[1]) as f:
+    urls = json.loads(f.read())
 
 def normalize_url(url):
     """Normalize URL for dedup comparison"""
@@ -67,19 +69,20 @@ print(json.dumps({
     }
 }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 cmd_text() {
-    local input
-    input=$(cat)
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
 
-    python3 << 'PYEOF'
+    python3 - "$tmpfile" << 'PYEOF'
 import re, sys, json
 from urllib.parse import urlparse
 
-text = sys.stdin.read() if not sys.stdin.isatty() else ""
-if not text:
-    text = r"""TEXTPLACEHOLDER"""
+with open(sys.argv[1]) as f:
+    text = f.read()
 
 # Extract all URLs from text
 url_pattern = r'https?://[^\s\)\]>\"\'`]+'
@@ -118,6 +121,7 @@ else:
         "duplicates": []
     }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 case "${1:-help}" in

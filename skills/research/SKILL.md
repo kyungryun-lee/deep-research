@@ -61,8 +61,12 @@ argument-hint: "리서치 주제" [--depth deep] [--rubric poc] [--mode full-pip
 - 메모리 매칭: dr-memory
 - 플랜/결과 캐시: dr-cache + SubagentStop/PreCompact hook
 - **쿼리 정규화**: dr-normalize (동의어 매핑 + 정렬 → 캐시키 생성)
+- **쿼리 사전분류**: dr-classify (rubric/complexity/recency 결정론적 분류)
 - **쿼리 기반 캐싱**: dr-cache save-query/load-query (24h TTL, source_jaccard 향상)
 - **시맨틱 캐시**: dr-cache semantic-match (TF-IDF 코사인 유사도, 벡터 DB 불필요)
+- **Phase 3.5 병렬 전처리**: dr-preprocess (7단계 병렬, ~70% 속도 향상)
+- **KPR/KPC 정합성**: dr-score kpr-kpc (Key-point Recall/Contradiction)
+- **Knowledge 진화**: dr-knowledge evolve (A-Mem 자동 크로스링크)
 - **토큰 대시보드**: dr-tokens record/report/estimate (Phase별 토큰+비용 추적)
 - **Batch API**: dr-batch create/status/results (50% 할인, 비긴급 Worker 병렬)
 - 세션 기록: dr-memory save
@@ -109,6 +113,26 @@ iteration = 0
   질문: {query}
   모드: {mode} | 깊이: {depth} | 평가기준: {rubric}
 ```
+
+### Phase 0.5: 리서치 범위 확인 (Unified Intent-Planning)
+
+**SOTA 근거**: Gemini DR이 RACE 점수 48.88로 1위 — 범위 확인 단계가 핵심 차별점 (arXiv 2506.18096)
+
+리서치 실행 전에 사용자에게 범위를 확인합니다:
+```
+[범위 확인] 아래 내용으로 리서치를 시작합니다. 수정이 필요하면 알려주세요:
+  주제: {query}
+  프로필: {profile} (→ {rubric})
+  예상 범위: {depth에 따른 Worker 수}개 에이전트
+  핵심 질문: {SEA 체크리스트 상위 3-5개 미리보기}
+  예상 비용: ${dr-tokens estimate 결과}
+  
+  진행할까요? (y/수정사항)
+```
+
+사용자가 수정을 요청하면 → 반영 후 재확인
+사용자가 승인하면 → Phase 1로 진행
+**mode가 "full-pipeline"이거나 depth가 "surface"이면 범위 확인을 건너뜁니다.**
 
 ---
 
@@ -191,6 +215,16 @@ ${PLUGIN_DIR}/bin/dr-cache semantic-match "{query}" 0.5
 - 사용자에게 알림: `[Cache] 유사 주제 발견 (cosine={sim}) — 소스 {n}건 참고`
 
 완전 미스 시: 정상 진행 (신규 검색)
+
+### 1.4 쿼리 사전분류 (코드 — AI 호출 0)
+
+Planner의 결정론적 파라미터를 코드로 사전계산합니다:
+```bash
+${PLUGIN_DIR}/bin/dr-classify all "{query}" "{depth}"
+```
+
+결과에서 `profile`, `complexity`, `workers`, `recency`를 추출하여 Planner에 전달합니다.
+Planner는 이 값을 기본값으로 수용하고, 검색 쿼리 생성과 SEA 체크리스트에만 집중합니다.
 
 ### Planner 에이전트 호출
 
@@ -318,69 +352,40 @@ Gap 영역에 대해 1-2개 심화 Worker를 실행합니다.
 
 ---
 
-## Phase 3.5: 외부 검증 전처리 (코드 — AI 호출 0)
+## Phase 3.5: 외부 검증 전처리 (코드 — AI 호출 0, 병렬 실행)
 
-Worker 결과 병합 후, Evaluator 호출 전에 다음 코드 처리를 실행합니다:
+Worker 결과 병합 후, Evaluator 호출 전에 7개 독립 하네스 단계를 **병렬**로 실행합니다.
+`dr-preprocess`가 내부적으로 모든 단계를 `&` + `wait`로 병렬 처리하여 ~70% 시간 단축:
 
-### 3.5.1 중복 소스 제거
 ```bash
-echo '{all_findings}' | ${PLUGIN_DIR}/bin/dr-dedup
+# findings, urls, sources, claims를 임시 파일로 저장 후 단일 호출
+${PLUGIN_DIR}/bin/dr-preprocess run \
+  --findings {findings_tmpfile} \
+  --urls {urls_tmpfile} \
+  --sources {sources_tmpfile} \
+  --claims {claims_tmpfile}
 ```
-- URL 정규화 후 동일 소스 제거
-- 유사 제목(fuzzy ratio ≥ 85%) 중복 경고
 
-### 3.5.2 소스 등급 사전분류
-```bash
-echo '{urls_json}' | ${PLUGIN_DIR}/bin/dr-verify classify
-```
-- 도메인 화이트리스트 기반 1차 등급 부여 (S/A/B/C)
-- Worker가 부여한 등급과 불일치 시 경고 플래그 추가
-- AI는 경계 케이스(화이트리스트에 없는 도메인)만 판단
+내부 병렬 실행 단계:
+- 3.5.1 `dr-dedup text` — 중복 소스 제거
+- 3.5.2 `dr-verify classify` — 도메인 기반 등급 사전분류
+- 3.5.3 `dr-verify check-urls` — URL 유효성 검증
+- 3.5.4 `dr-score diversity` — Shannon entropy
+- 3.5.5 `dr-score recency` — 최신성 사전계산
+- 3.5.6 `dr-score xref` — 교차참조 밀도
+- 3.5.7 `dr-score structure` — 구조 분석
 
-### 3.5.3 URL 유효성 검증
-```bash
-echo '{urls_json}' | ${PLUGIN_DIR}/bin/dr-verify check-urls
-```
-- HTTP HEAD 요청으로 접근 가능 여부 확인
-- 404/5xx 소스는 `[접근불가]` 태그 부착
-- Evaluator에게 검증 결과 전달 (AI의 WebFetch 호출 감소)
-
-### 3.5.4 소스 다양성 (Shannon Entropy)
-```bash
-echo '{urls_json}' | ${PLUGIN_DIR}/bin/dr-score diversity
-```
-- 도메인별 Shannon entropy 계산 (높을수록 다양)
-- 결과: `diversity_entropy`, `unique_domains`
-
-### 3.5.5 최신성 사전계산
-```bash
-echo '{sources_with_years_json}' | ${PLUGIN_DIR}/bin/dr-score recency
-```
-- 소스 발행연도 기반 가중 점수 (2년 이내 비율 포함)
-- 결과: `recency_score`, `recent_ratio`
-
-### 3.5.6 교차참조 밀도
-```bash
-echo '{claim_evidence_json}' | ${PLUGIN_DIR}/bin/dr-score xref
-```
-- 2개+ 독립 소스 근거가 있는 주장의 비율
-- 결과: `xref_density`, `multi_cited`, `no_evidence`
-
-### 3.5.7 구조 분석
-```bash
-echo '{report_markdown}' | ${PLUGIN_DIR}/bin/dr-score structure
-```
-- 제목 계층/섹션 균형/분량 분석
-- 결과: `structure_score`, `balance`, `word_count`
-
-### Phase 3.5 결과 종합
-```
-code_metrics = {
-  "diversity_entropy": {3.5.4 결과}.entropy,
-  "recency_score": {3.5.5 결과}.recency_score,
-  "recent_ratio": {3.5.5 결과}.recent_ratio,
-  "xref_density": {3.5.6 결과}.density,
-  "structure_score": {3.5.7 결과}.structure_score
+### Phase 3.5 출력
+`dr-preprocess`가 통합 JSON을 반환합니다:
+```json
+{
+  "code_metrics": {
+    "diversity_entropy": N, "recency_score": N, "recent_ratio": N,
+    "xref_density": N, "structure_score": N
+  },
+  "dedup_result": {...},
+  "classify_result": {...},
+  "url_check_result": {...}
 }
 ```
 
@@ -457,6 +462,31 @@ echo '{evaluator_scores_json}' | ${PLUGIN_DIR}/bin/dr-score calc --rubric {rubri
 - code_metrics 있으면 Recency/Structure 블렌딩 (70% 코드 + 30% AI → 분산 감소)
 - SEA 충족률 계산 (체크리스트 항목 카운트)
 - PASS/FAIL 판정 (total ≥ target_score AND sea_rate ≥ threshold)
+
+### 다중 판사 앙상블 (depth=deep 시 활성화)
+
+**SOTA 근거**: Autorubric (arXiv 2603.00077) — 다중 판사가 단일 판사보다 일관적으로 우수
+
+`depth`가 "deep"이면 Evaluator를 **2회 독립 실행** 후 점수 평균:
+1. 1차 Evaluator 실행 (독립 컨텍스트)
+2. 2차 Evaluator 실행 (독립 컨텍스트, 1차 결과 미전달)
+3. 차원별 점수 평균 계산 (코드: `dr-score calc`)
+4. 두 판사 간 점수 차 > 15인 차원은 `[평가 불일치]` 플래그 → 사용자에게 보고
+
+surface/standard 깊이에서는 단일 판사로 충분 (비용 효율).
+
+### KPR/KPC 보고서 정합성 검증 (코드 — AI 호출 0)
+
+**SOTA 근거**: CCI 지표 (MDPI 2076-3417/16/5/2546) — KPR/KPC로 보고서 정합성 측정
+
+Evaluator 완료 후 보고서 정합성을 코드로 검증합니다:
+```bash
+echo '{"key_points":[SEA 체크리스트],"report_claims":[보고서 핵심 발견]}' | ${PLUGIN_DIR}/bin/dr-score kpr-kpc
+```
+- **KPR** (Key-point Recall): SEA 항목 중 보고서에서 다룬 비율
+- **KPC** (Key-point Contradiction): 보고서 주장 중 SEA와 모순되는 비율
+- **CCI** (Composite Consistency Index): KPR × (1 - KPC)
+- CCI < 0.6이면 `[정합성 경고]` → 보완 필요
 
 ### 판정 처리 (적응적 종료)
 

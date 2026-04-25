@@ -43,18 +43,20 @@ cmd_calc() {
         esac
     done
 
-    local input
-    input=$(cat)
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
 
-    python3 << PYEOF
+    python3 - "$tmpfile" "$rubric_path" "$code_metrics" << 'PYEOF'
 import json, sys
 
-input_data = json.loads('''$input''')
+with open(sys.argv[1]) as f:
+    input_data = json.loads(f.read())
 scores = input_data['scores']
 target = input_data.get('target_score', 80)
 
 # Code metrics blending (70% code + 30% AI for recency/structure)
-code_metrics_str = '''$code_metrics'''
+code_metrics_str = sys.argv[3] if len(sys.argv) > 3 else ''
 if code_metrics_str:
     try:
         cm = json.loads(code_metrics_str)
@@ -69,7 +71,7 @@ if code_metrics_str:
 
 # Load rubric weights
 weights = None
-rubric_path = '''$rubric_path'''
+rubric_path = sys.argv[2] if len(sys.argv) > 2 else ''
 if rubric_path:
     try:
         with open(rubric_path) as f:
@@ -135,16 +137,19 @@ print(json.dumps({
     "missing_dimensions": missing
 }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 cmd_sea() {
-    local input
-    input=$(cat)
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
 
-    python3 << PYEOF
-import json
+    python3 - "$tmpfile" << 'PYEOF'
+import json, sys
 
-data = json.loads('''$input''')
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
 checked = data.get('checked', [])
 total = data.get('total', [])
 threshold = data.get('threshold', 75)
@@ -166,16 +171,19 @@ print(json.dumps({
     "unchecked": unchecked
 }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 cmd_plateau() {
-    local input
-    input=$(cat)
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
 
-    python3 << PYEOF
-import json
+    python3 - "$tmpfile" << 'PYEOF'
+import json, sys
 
-data = json.loads('''$input''')
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
 history = data.get('history', [])
 threshold = data.get('threshold', 3)      # minimum improvement to not be plateau
 consecutive = data.get('consecutive', 2)   # consecutive low-improvement rounds
@@ -202,16 +210,19 @@ else:
         "reason": f"Last {len(recent)} improvements all < {threshold}%" if is_plateau else "Still improving"
     }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 cmd_diversity() {
-    local input
-    input=$(cat)
-    python3 << PYEOF
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    python3 - "$tmpfile" << 'PYEOF'
 import json, sys, math
 from urllib.parse import urlparse
 
-urls = json.loads('''$input''')
+with open(sys.argv[1]) as f:
+    urls = json.loads(f.read())
 if not urls:
     print(json.dumps({"entropy": 0, "unique_domains": 0, "total": 0}))
     sys.exit(0)
@@ -242,16 +253,19 @@ print(json.dumps({
     "top_domains": dict(counts.most_common(5))
 }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 cmd_recency() {
-    local input
-    input=$(cat)
-    python3 << PYEOF
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    python3 - "$tmpfile" << 'PYEOF'
 import json, sys
 from datetime import datetime
 
-sources = json.loads('''$input''')
+with open(sys.argv[1]) as f:
+    sources = json.loads(f.read())
 if not sources:
     print(json.dumps({"score": 0, "recent_ratio": 0, "total": 0}))
     sys.exit(0)
@@ -283,15 +297,18 @@ print(json.dumps({
     "recency_score": avg_score
 }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 cmd_xref() {
-    local input
-    input=$(cat)
-    python3 << PYEOF
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    python3 - "$tmpfile" << 'PYEOF'
 import json, sys
 
-data = json.loads('''$input''')
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
 claims = data if isinstance(data, list) else data.get("claims", [])
 
 if not claims:
@@ -322,15 +339,18 @@ print(json.dumps({
     "total": total
 }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
 }
 
 cmd_structure() {
-    local input
-    input=$(cat)
-    python3 << PYEOF
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    python3 - "$tmpfile" << 'PYEOF'
 import json, sys, re
 
-text = '''$input'''
+with open(sys.argv[1]) as f:
+    text = f.read()
 if not text.strip():
     print(json.dumps({"score": 0, "headings": {}, "balance": 0, "word_count": 0}))
     sys.exit(0)
@@ -367,6 +387,82 @@ print(json.dumps({
     "word_count": word_count
 }, ensure_ascii=False, indent=2))
 PYEOF
+    rm -f "$tmpfile"
+}
+
+cmd_kpr_kpc() {
+    # Key-point Recall (KPR) + Key-point Contradiction (KPC)
+    # SOTA metric from Deep-Research Eval (MDPI 2076-3417/16/5/2546)
+    # Input: JSON with "key_points" (expected) and "report_claims" (actual)
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    python3 - "$tmpfile" << 'PYEOF'
+import json, sys, re, math
+from collections import Counter
+
+with open(sys.argv[1]) as f:
+    data = json.loads(f.read())
+
+key_points = data.get("key_points", [])  # expected key points from SEA/plan
+report_claims = data.get("report_claims", [])  # actual claims in report
+
+if not key_points:
+    print(json.dumps({"kpr": 1.0, "kpc": 0.0, "note": "no key points provided"}))
+    sys.exit(0)
+
+def tokenize(text):
+    return set(re.findall(r'[a-z0-9\uac00-\ud7a3]+', text.lower()))
+
+def overlap(a, b):
+    ta, tb = tokenize(a), tokenize(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / min(len(ta), len(tb))
+
+# KPR: fraction of key_points that are covered by report_claims
+covered = 0
+coverage_details = []
+for kp in key_points:
+    best_match = max((overlap(kp, rc) for rc in report_claims), default=0)
+    is_covered = best_match >= 0.3
+    if is_covered:
+        covered += 1
+    coverage_details.append({"key_point": kp[:80], "best_overlap": round(best_match, 3), "covered": is_covered})
+
+kpr = round(covered / len(key_points), 3)
+
+# KPC: fraction of report_claims that contradict key_points
+negations = {'not', 'no', 'never', 'without', 'lack', 'fail', 'cannot',
+             '없', '아닌', '불가', '못', '실패', '부족'}
+contradictions = 0
+for rc in report_claims:
+    rc_tokens = tokenize(rc)
+    rc_has_neg = bool(rc_tokens & negations)
+    for kp in key_points:
+        kp_tokens = tokenize(kp)
+        kp_has_neg = bool(kp_tokens & negations)
+        if overlap(rc, kp) >= 0.3 and rc_has_neg != kp_has_neg:
+            contradictions += 1
+            break
+
+kpc = round(contradictions / len(report_claims), 3) if report_claims else 0.0
+
+# Composite Consistency Index (CCI)
+cci = round(kpr * (1 - kpc), 3)
+
+print(json.dumps({
+    "kpr": kpr,
+    "kpc": kpc,
+    "cci": cci,
+    "key_points_total": len(key_points),
+    "key_points_covered": covered,
+    "report_claims_total": len(report_claims),
+    "contradictions": contradictions,
+    "coverage_details": coverage_details[:10]
+}, ensure_ascii=False, indent=2))
+PYEOF
+    rm -f "$tmpfile"
 }
 
 case "${1:-help}" in
@@ -377,6 +473,7 @@ case "${1:-help}" in
     recency)    cmd_recency ;;
     xref)       cmd_xref ;;
     structure)  cmd_structure ;;
+    kpr-kpc)    cmd_kpr_kpc ;;
     help)       usage ;;
     *)          usage ;;
 esac

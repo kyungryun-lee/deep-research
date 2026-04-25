@@ -18,62 +18,34 @@ Commands:
   batch                     Normalize multiple queries from stdin JSON array
   help                      Show this help
 
-Examples:
-  dr-normalize normalize "Claude Code plugin ecosystem 2026"
-  dr-normalize cache-key "best LLM frameworks for production"
-  dr-normalize similar "React vs Vue comparison" "Vue vs React compare"
-  echo '["query 1","query 2"]' | dr-normalize batch
-
 Output format (normalize):
   {"original":"...","normalized":"...","cache_key":"...","tokens":["..."]}
-
-Output format (similar):
-  {"similar":true,"cosine":0.85,"threshold":0.6}
 EOF
 }
 
-cmd_normalize() {
-    local query="$1"
-    python3 << PYEOF
-import json, re, hashlib
+# Shared Python normalize logic — single source of truth
+_run_normalize_py() {
+    python3 - "$@" << 'PYEOF'
+import json, re, hashlib, math, sys
+from collections import Counter
 
 SYNONYMS = {
-    "vs": "versus",
-    "vs.": "versus",
-    "comparison": "compare",
-    "comparing": "compare",
-    "compared": "compare",
-    "evaluate": "evaluation",
-    "evaluating": "evaluation",
-    "implement": "implementation",
-    "implementing": "implementation",
-    "optimize": "optimization",
-    "optimizing": "optimization",
-    "best": "top",
-    "greatest": "top",
-    "framework": "framework",
-    "frameworks": "framework",
-    "library": "library",
-    "libraries": "library",
-    "tool": "tool",
-    "tools": "tool",
-    "plugin": "plugin",
-    "plugins": "plugin",
-    "extension": "extension",
-    "extensions": "extension",
-    "performance": "performance",
-    "perf": "performance",
-    "tutorial": "guide",
-    "tutorials": "guide",
-    "guides": "guide",
-    "howto": "guide",
-    "how-to": "guide",
-    "latest": "recent",
-    "newest": "recent",
-    "current": "recent",
-    "using": "use",
-    "utilized": "use",
-    "utilize": "use",
+    "vs": "versus", "vs.": "versus",
+    "comparison": "compare", "comparing": "compare", "compared": "compare",
+    "evaluate": "evaluation", "evaluating": "evaluation",
+    "implement": "implementation", "implementing": "implementation",
+    "optimize": "optimization", "optimizing": "optimization",
+    "best": "top", "greatest": "top",
+    "framework": "framework", "frameworks": "framework",
+    "library": "library", "libraries": "library",
+    "tool": "tool", "tools": "tool",
+    "plugin": "plugin", "plugins": "plugin",
+    "extension": "extension", "extensions": "extension",
+    "performance": "performance", "perf": "performance",
+    "tutorial": "guide", "tutorials": "guide", "guides": "guide",
+    "howto": "guide", "how-to": "guide",
+    "latest": "recent", "newest": "recent", "current": "recent",
+    "using": "use", "utilized": "use", "utilize": "use",
 }
 
 STOPWORDS = {
@@ -88,134 +60,10 @@ STOPWORDS = {
     'very','just','also','more','only','than','then','too',
 }
 
-query = '''$query'''
-
-# Lowercase
-normalized = query.lower().strip()
-
-# Remove quotes and special chars (keep hyphens in compound words)
-normalized = re.sub(r'["\'\(\)\[\]\{\}<>]', ' ', normalized)
-
-# Tokenize
-tokens = re.findall(r'[a-z0-9가-힣][-a-z0-9가-힣]*', normalized)
-
-# Apply synonym mapping
-mapped = []
-for t in tokens:
-    t_clean = t.strip('-')
-    if t_clean in SYNONYMS:
-        mapped.append(SYNONYMS[t_clean])
-    elif t_clean not in STOPWORDS and len(t_clean) > 1:
-        mapped.append(t_clean)
-
-# Deduplicate while preserving first occurrence order
-seen = set()
-deduped = []
-for t in mapped:
-    if t not in seen:
-        seen.add(t)
-        deduped.append(t)
-
-# Sort alphabetically for canonical form
-sorted_tokens = sorted(deduped)
-normalized_str = ' '.join(sorted_tokens)
-
-# Generate cache key
-cache_key = hashlib.md5(normalized_str.encode()).hexdigest()[:12]
-
-print(json.dumps({
-    "original": query,
-    "normalized": normalized_str,
-    "cache_key": cache_key,
-    "tokens": sorted_tokens,
-    "unsorted": deduped
-}, ensure_ascii=False))
-PYEOF
-}
-
-cmd_cache_key() {
-    local query="$1"
-    # Quick path: just output the cache key
-    cmd_normalize "$query" | python3 -c "import json,sys; print(json.load(sys.stdin)['cache_key'])"
-}
-
-cmd_similar() {
-    local q1="$1" q2="$2" threshold="${3:-0.6}"
-    python3 << PYEOF
-import json, re, math
-from collections import Counter
-
-STOPWORDS = {
-    'the','a','an','is','are','was','were','be','been','being',
-    'have','has','had','do','does','did','will','would','could',
-    'should','may','might','can','need','to','of','in','for',
-    'on','with','at','by','from','as','and','but','or','not',
-    'so','if','that','this','it','its','i','we','they','what',
-    'which','who','how','where','when','why','all','each','both',
-    'some','most','other','about','into','through','during',
-}
-
-def tokenize(text):
-    tokens = re.findall(r'[a-z0-9가-힣]+', text.lower())
-    return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
-
-def cosine(a, b):
-    if not a or not b:
-        return 0.0
-    ca, cb = Counter(a), Counter(b)
-    vocab = set(ca) | set(cb)
-    dot = sum(ca.get(w,0) * cb.get(w,0) for w in vocab)
-    ma = math.sqrt(sum(v**2 for v in ca.values()))
-    mb = math.sqrt(sum(v**2 for v in cb.values()))
-    return dot / (ma * mb) if ma and mb else 0.0
-
-q1 = '''$q1'''
-q2 = '''$q2'''
-threshold = $threshold
-
-t1, t2 = tokenize(q1), tokenize(q2)
-sim = round(cosine(t1, t2), 3)
-
-print(json.dumps({
-    "similar": sim >= threshold,
-    "cosine": sim,
-    "threshold": threshold,
-    "q1_tokens": len(t1),
-    "q2_tokens": len(t2)
-}))
-PYEOF
-}
-
-cmd_batch() {
-    local input
-    input=$(cat)
-    python3 << PYEOF
-import json, re, hashlib
-
-SYNONYMS = {
-    "vs": "versus", "vs.": "versus", "comparison": "compare",
-    "comparing": "compare", "frameworks": "framework", "libraries": "library",
-    "tools": "tool", "plugins": "plugin", "extensions": "extension",
-    "latest": "recent", "newest": "recent", "current": "recent",
-    "tutorial": "guide", "tutorials": "guide", "guides": "guide",
-    "implement": "implementation", "implementing": "implementation",
-    "optimize": "optimization", "optimizing": "optimization",
-}
-
-STOPWORDS = {
-    'the','a','an','is','are','was','were','be','been','being',
-    'have','has','had','do','does','did','will','would','could',
-    'should','may','might','can','need','to','of','in','for',
-    'on','with','at','by','from','as','and','but','or','not',
-    'so','if','that','this','it','its','i','we','they','what',
-    'which','who','how','where','when','why','all','each','both',
-    'some','most','other','about','into','through','during',
-}
-
 def normalize_query(query):
     normalized = query.lower().strip()
     normalized = re.sub(r'["\'\(\)\[\]\{\}<>]', ' ', normalized)
-    tokens = re.findall(r'[a-z0-9가-힣][-a-z0-9가-힣]*', normalized)
+    tokens = re.findall(r'[a-z0-9\uac00-\ud7a3][-a-z0-9\uac00-\ud7a3]*', normalized)
     mapped = []
     for t in tokens:
         t_clean = t.strip('-')
@@ -236,26 +84,83 @@ def normalize_query(query):
         "original": query,
         "normalized": normalized_str,
         "cache_key": cache_key,
-        "tokens": sorted_tokens
+        "tokens": sorted_tokens,
+        "unsorted": deduped
     }
 
-queries = json.loads('''$input''')
-results = [normalize_query(q) for q in queries]
+def tokenize(text):
+    tokens = re.findall(r'[a-z0-9\uac00-\ud7a3]+', text.lower())
+    return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
 
-# Group by cache_key to detect duplicates
-groups = {}
-for r in results:
-    groups.setdefault(r['cache_key'], []).append(r['original'])
+def cosine(a, b):
+    if not a or not b:
+        return 0.0
+    ca, cb = Counter(a), Counter(b)
+    vocab = set(ca) | set(cb)
+    dot = sum(ca.get(w,0) * cb.get(w,0) for w in vocab)
+    ma = math.sqrt(sum(v**2 for v in ca.values()))
+    mb = math.sqrt(sum(v**2 for v in cb.values()))
+    return dot / (ma * mb) if ma and mb else 0.0
 
-duplicates = {k: v for k, v in groups.items() if len(v) > 1}
+# --- Command dispatch ---
+mode = sys.argv[1]
 
-print(json.dumps({
-    "results": results,
-    "total": len(results),
-    "unique_keys": len(groups),
-    "duplicates": duplicates
-}, ensure_ascii=False, indent=2))
+if mode == "normalize":
+    query = sys.argv[2]
+    print(json.dumps(normalize_query(query), ensure_ascii=False))
+
+elif mode == "cache-key":
+    query = sys.argv[2]
+    print(normalize_query(query)["cache_key"])
+
+elif mode == "similar":
+    q1, q2 = sys.argv[2], sys.argv[3]
+    threshold = float(sys.argv[4]) if len(sys.argv) > 4 else 0.6
+    t1, t2 = tokenize(q1), tokenize(q2)
+    sim = round(cosine(t1, t2), 3)
+    print(json.dumps({
+        "similar": sim >= threshold,
+        "cosine": sim,
+        "threshold": threshold,
+        "q1_tokens": len(t1),
+        "q2_tokens": len(t2)
+    }))
+
+elif mode == "batch":
+    with open(sys.argv[2]) as f:
+        queries = json.loads(f.read())
+    results = [normalize_query(q) for q in queries]
+    groups = {}
+    for r in results:
+        groups.setdefault(r['cache_key'], []).append(r['original'])
+    duplicates = {k: v for k, v in groups.items() if len(v) > 1}
+    print(json.dumps({
+        "results": results,
+        "total": len(results),
+        "unique_keys": len(groups),
+        "duplicates": duplicates
+    }, ensure_ascii=False, indent=2))
 PYEOF
+}
+
+cmd_normalize() {
+    _run_normalize_py "normalize" "$1"
+}
+
+cmd_cache_key() {
+    _run_normalize_py "cache-key" "$1"
+}
+
+cmd_similar() {
+    _run_normalize_py "similar" "$1" "$2" "${3:-0.6}"
+}
+
+cmd_batch() {
+    local tmpfile
+    tmpfile=$(mktemp)
+    cat > "$tmpfile"
+    _run_normalize_py "batch" "$tmpfile"
+    rm -f "$tmpfile"
 }
 
 case "${1:-help}" in

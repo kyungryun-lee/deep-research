@@ -560,6 +560,148 @@ else:
 "
 }
 
+cmd_evolve() {
+    # A-Mem style knowledge evolution
+    # When new knowledge is saved, auto-update related existing topics
+    # Based on: A-Mem (arXiv 2502.12110) Zettelkasten approach
+    local topic=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --topic) topic="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [[ -z "$topic" ]] && { echo '{"error":"--topic required"}'; return 1; }
+
+    python3 - "$KNOWLEDGE_DIR" "$topic" << 'PYEOF'
+import json, sys, os, re, math
+from collections import Counter
+from datetime import datetime
+
+knowledge_dir, topic = sys.argv[1], sys.argv[2]
+now = datetime.now().strftime("%Y-%m-%d")
+
+def tokenize(text):
+    return re.findall(r'[a-z0-9\uac00-\ud7a3]+', text.lower())
+
+def cosine(a, b):
+    if not a or not b:
+        return 0.0
+    ca, cb = Counter(a), Counter(b)
+    vocab = set(ca) | set(cb)
+    dot = sum(ca.get(w,0) * cb.get(w,0) for w in vocab)
+    ma = math.sqrt(sum(v**2 for v in ca.values()))
+    mb = math.sqrt(sum(v**2 for v in cb.values()))
+    return dot / (ma * mb) if ma and mb else 0.0
+
+if not os.path.exists(knowledge_dir):
+    print(json.dumps({"evolved": 0, "message": "no knowledge base"}))
+    sys.exit(0)
+
+# Load source topic's core facts
+source_hash = None
+source_facts = []
+for entry in os.listdir(knowledge_dir):
+    meta_path = os.path.join(knowledge_dir, entry, "meta.json")
+    if not os.path.exists(meta_path):
+        continue
+    with open(meta_path) as f:
+        meta = json.load(f)
+    if meta.get("topic") == topic:
+        source_hash = entry
+        core_path = os.path.join(knowledge_dir, entry, "core-facts.json")
+        if os.path.exists(core_path):
+            with open(core_path) as f:
+                source_facts = json.load(f).get("facts", [])
+        break
+
+if not source_facts:
+    print(json.dumps({"evolved": 0, "message": "no core facts to propagate"}))
+    sys.exit(0)
+
+source_tokens = []
+for f in source_facts:
+    source_tokens.extend(tokenize(f.get("claim", "")))
+
+# Find related topics and cross-link
+evolved = 0
+links_added = []
+
+for entry in os.listdir(knowledge_dir):
+    if entry == source_hash:
+        continue
+    meta_path = os.path.join(knowledge_dir, entry, "meta.json")
+    if not os.path.exists(meta_path):
+        continue
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    target_topic = meta.get("topic", "")
+    target_tokens = tokenize(target_topic)
+
+    # Check core facts for deeper similarity
+    core_path = os.path.join(knowledge_dir, entry, "core-facts.json")
+    if os.path.exists(core_path):
+        with open(core_path) as f:
+            target_core = json.load(f)
+        for tf in target_core.get("facts", []):
+            target_tokens.extend(tokenize(tf.get("claim", "")))
+
+    sim = cosine(source_tokens, target_tokens)
+
+    if sim > 0.15:  # Related topic found
+        # Add cross-reference link
+        links_path = os.path.join(knowledge_dir, entry, "links.json")
+        links = {"topic": target_topic, "links": []}
+        if os.path.exists(links_path):
+            with open(links_path) as f:
+                links = json.load(f)
+
+        existing_refs = {l.get("target_hash") for l in links.get("links", [])}
+        if source_hash not in existing_refs:
+            links.setdefault("links", []).append({
+                "target_hash": source_hash,
+                "target_topic": topic,
+                "similarity": round(sim, 3),
+                "linked_at": now,
+                "type": "related"
+            })
+            with open(links_path, "w") as f:
+                json.dump(links, f, ensure_ascii=False, indent=2)
+            evolved += 1
+            links_added.append({
+                "from": target_topic[:50],
+                "to": topic[:50],
+                "similarity": round(sim, 3)
+            })
+
+        # Also add reverse link in source topic
+        src_links_path = os.path.join(knowledge_dir, source_hash, "links.json")
+        src_links = {"topic": topic, "links": []}
+        if os.path.exists(src_links_path):
+            with open(src_links_path) as f:
+                src_links = json.load(f)
+        src_existing = {l.get("target_hash") for l in src_links.get("links", [])}
+        if entry not in src_existing:
+            src_links.setdefault("links", []).append({
+                "target_hash": entry,
+                "target_topic": target_topic,
+                "similarity": round(sim, 3),
+                "linked_at": now,
+                "type": "related"
+            })
+            with open(src_links_path, "w") as f:
+                json.dump(src_links, f, ensure_ascii=False, indent=2)
+
+print(json.dumps({
+    "evolved": evolved,
+    "links_added": links_added,
+    "source_topic": topic,
+    "source_facts_count": len(source_facts)
+}, ensure_ascii=False, indent=2))
+PYEOF
+}
+
 case "${1:-help}" in
     save)        shift; cmd_save "$@" ;;
     load)        shift; cmd_load "$@" ;;
@@ -567,6 +709,7 @@ case "${1:-help}" in
     anchors)     shift; cmd_anchors "$@" ;;
     conflicts)   shift; cmd_conflicts "$@" ;;
     update-core) shift; cmd_update_core "$@" ;;
+    evolve)      shift; cmd_evolve "$@" ;;
     stats)       cmd_stats ;;
     topics)      cmd_topics ;;
     help)        usage ;;

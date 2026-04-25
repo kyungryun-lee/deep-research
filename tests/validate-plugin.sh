@@ -388,6 +388,88 @@ else
     fail "SKILL.md missing Batch API"
 fi
 
+# --- 13. Meta-Research Improvements (P0-P2) ---
+echo ""
+echo "[13] Meta-Research Improvements"
+
+# P0-2: dr-preprocess executable
+[ -x "$PLUGIN_DIR/bin/dr-preprocess" ] && pass "dr-preprocess is executable" || fail "dr-preprocess not executable"
+
+# P1: dr-classify executable + profile test
+[ -x "$PLUGIN_DIR/bin/dr-classify" ] && pass "dr-classify is executable" || fail "dr-classify not executable"
+
+# dr-classify profile detection
+CLASSIFY_OUT=$("$PLUGIN_DIR/bin/dr-classify" profile "최신 연구 트렌드 조사" 2>/dev/null)
+echo "$CLASSIFY_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['profile']=='exploration', f'expected exploration: {d}'" 2>/dev/null && pass "dr-classify exploration profile works" || fail "dr-classify exploration failed"
+
+CLASSIFY_POC=$("$PLUGIN_DIR/bin/dr-classify" profile "이 방법이 가능한가 PoC 검증" 2>/dev/null)
+echo "$CLASSIFY_POC" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['profile']=='poc', f'expected poc: {d}'" 2>/dev/null && pass "dr-classify poc profile works" || fail "dr-classify poc failed"
+
+CLASSIFY_DEF=$("$PLUGIN_DIR/bin/dr-classify" profile "React 구현 방법 비교" 2>/dev/null)
+echo "$CLASSIFY_DEF" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['profile']=='default', f'expected default: {d}'" 2>/dev/null && pass "dr-classify default profile works" || fail "dr-classify default failed"
+
+# dr-classify all test
+CLASSIFY_ALL=$("$PLUGIN_DIR/bin/dr-classify" all "심층 비교 분석" "deep" 2>/dev/null)
+echo "$CLASSIFY_ALL" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'profile' in d and 'complexity' in d and 'workers' in d and 'recency' in d
+" 2>/dev/null && pass "dr-classify all returns complete classification" || fail "dr-classify all failed"
+
+# P1: SOURCE_TIERS.md exists
+[ -f "$PLUGIN_DIR/skills/research/SOURCE_TIERS.md" ] && pass "SOURCE_TIERS.md exists (unified tier definition)" || fail "SOURCE_TIERS.md missing"
+
+# P2: dr-score kpr-kpc test
+KPR_OUT=$(echo '{"key_points":["React performance","Vue reactivity","Angular modules"],"report_claims":["React performance optimization","Vue reactive system","Svelte compilation"]}' | "$PLUGIN_DIR/bin/dr-score" kpr-kpc 2>/dev/null)
+echo "$KPR_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'kpr' in d and 'kpc' in d and 'cci' in d
+assert d['kpr'] > 0, f'expected some coverage: {d}'
+assert d['key_points_total']==3
+" 2>/dev/null && pass "dr-score kpr-kpc works" || fail "dr-score kpr-kpc failed"
+
+# P2: dr-dedup text (previously broken)
+DEDUP_TEXT_OUT=$(echo "Some text with https://example.com/a and https://www.example.com/a duplicate URLs" | "$PLUGIN_DIR/bin/dr-dedup" text 2>/dev/null)
+echo "$DEDUP_TEXT_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('total_urls',0) >= 2, f'expected urls: {d}'
+assert d.get('has_duplicates')==True, f'expected duplicates: {d}'
+" 2>/dev/null && pass "dr-dedup text works (bug fixed)" || fail "dr-dedup text still broken"
+
+# P2: dr-score sea test
+SEA_OUT=$(echo '{"checked":["item1","item2"],"total":["item1","item2","item3"],"threshold":75}' | "$PLUGIN_DIR/bin/dr-score" sea 2>/dev/null)
+echo "$SEA_OUT" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+assert abs(d['rate'] - 66.7) < 1
+assert d['sufficient']==False
+assert len(d['unchecked'])==1
+" 2>/dev/null && pass "dr-score sea works" || fail "dr-score sea failed"
+
+# P2: SKILL.md has SOTA features
+if grep -q "Unified Intent-Planning" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has Unified Intent-Planning (SOTA)"
+else
+    fail "SKILL.md missing Unified Intent-Planning"
+fi
+if grep -q "다중 판사 앙상블" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has multi-judge ensemble (SOTA)"
+else
+    fail "SKILL.md missing multi-judge ensemble"
+fi
+if grep -q "kpr-kpc" "$PLUGIN_DIR/skills/research/SKILL.md"; then
+    pass "SKILL.md has KPR/KPC metrics (SOTA)"
+else
+    fail "SKILL.md missing KPR/KPC"
+fi
+if grep -q "evolve" "$PLUGIN_DIR/agents/research-synthesizer.md"; then
+    pass "Synthesizer has A-Mem knowledge evolution"
+else
+    fail "Synthesizer missing A-Mem evolution"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Results ==="

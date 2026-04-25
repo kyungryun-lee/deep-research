@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Deep Research Query Classifier
+# Deterministic rubric profile selection based on keyword patterns
+# Replaces AI inference in Planner Step 1 (맥락 판단)
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Deep Research Query Classifier
+
+Usage: dr-classify <command> [args]
+
+Commands:
+  profile "query"    Classify query → rubric profile (default/poc/exploration)
+  complexity "query" Estimate query complexity (1/2/3) → worker count
+  recency "query" [depth]  Determine recency window (1y/2y/5y)
+  all "query" [depth]      Run all classifications at once
+  help               Show this help
+EOF
+}
+
+cmd_profile() {
+    local query="$1"
+    python3 - "$query" << 'PYEOF'
+import json, sys, re
+
+query = sys.argv[1].lower()
+
+# PoC/validation patterns
+poc_patterns = [
+    r'가능한가', r'될까', r'poc', r'테스트', r'검증',
+    r'feasib', r'can\s+we', r'possible', r'prototype',
+    r'validate', r'proof\s+of\s+concept', r'시도'
+]
+
+# Exploration/research patterns
+explore_patterns = [
+    r'최신\s*연구', r'논문', r'트렌드', r'탐색', r'이론',
+    r'survey', r'state[\s-]*of[\s-]*the[\s-]*art', r'sota',
+    r'research\s+trend', r'emerging', r'frontier', r'방향'
+]
+
+# Default (practical solution) patterns
+practical_patterns = [
+    r'구현', r'적용', r'방법', r'도구', r'솔루션',
+    r'어떤.*좋', r'추천', r'비교', r'선택',
+    r'how\s+to', r'best\s+practice', r'implement',
+    r'production', r'deploy', r'setup', r'configure'
+]
+
+def match_count(patterns, text):
+    return sum(1 for p in patterns if re.search(p, text))
+
+poc_score = match_count(poc_patterns, query)
+explore_score = match_count(explore_patterns, query)
+practical_score = match_count(practical_patterns, query)
+
+if poc_score > explore_score and poc_score > practical_score:
+    profile = "poc"
+elif explore_score > poc_score and explore_score > practical_score:
+    profile = "exploration"
+else:
+    profile = "default"
+
+print(json.dumps({
+    "profile": profile,
+    "scores": {"default": practical_score, "poc": poc_score, "exploration": explore_score},
+    "confidence": "high" if max(poc_score, explore_score, practical_score) >= 2 else "medium" if max(poc_score, explore_score, practical_score) >= 1 else "low"
+}))
+PYEOF
+}
+
+cmd_complexity() {
+    local query="$1"
+    python3 - "$query" << 'PYEOF'
+import json, sys, re
+
+query = sys.argv[1].lower()
+
+# Complexity heuristics
+word_count = len(query.split())
+has_comparison = bool(re.search(r'(vs|versus|비교|compare|차이|difference)', query))
+has_multiple_topics = len(re.findall(r'(and|와|과|및|\+|,)', query)) >= 2
+has_deep_words = bool(re.search(r'(심층|종합|전체|포괄|comprehensive|thorough|deep|detailed)', query))
+
+if word_count > 20 or (has_comparison and has_multiple_topics) or has_deep_words:
+    complexity = 3
+    workers = {"min": 5, "max": 8}
+    calls_per_worker = {"min": 15, "max": 20}
+elif word_count > 10 or has_comparison or has_multiple_topics:
+    complexity = 2
+    workers = {"min": 3, "max": 4}
+    calls_per_worker = {"min": 10, "max": 15}
+else:
+    complexity = 1
+    workers = {"min": 1, "max": 2}
+    calls_per_worker = {"min": 3, "max": 10}
+
+print(json.dumps({
+    "complexity": complexity,
+    "workers": workers,
+    "calls_per_worker": calls_per_worker,
+    "signals": {
+        "word_count": word_count,
+        "has_comparison": has_comparison,
+        "has_multiple_topics": has_multiple_topics,
+        "has_deep_words": has_deep_words
+    }
+}))
+PYEOF
+}
+
+cmd_recency() {
+    local query="$1" depth="${2:-standard}"
+    python3 - "$query" "$depth" << 'PYEOF'
+import json, sys
+
+query, depth = sys.argv[1].lower(), sys.argv[2]
+
+depth_map = {"surface": "1y", "standard": "2y", "deep": "5y"}
+recency = depth_map.get(depth, "2y")
+
+# Override if query mentions specific timeframes
+import re
+if re.search(r'(최신|latest|recent|2026|이번\s*달|올해)', query):
+    recency = "1y"
+elif re.search(r'(역사|history|evolution|변천|since\s+\d{4})', query):
+    recency = "5y"
+
+print(json.dumps({"recency": recency, "depth": depth}))
+PYEOF
+}
+
+cmd_all() {
+    local query="$1" depth="${2:-standard}"
+    python3 - "$query" "$depth" << 'PYEOF'
+import json, sys, re
+
+query, depth = sys.argv[1], sys.argv[2]
+ql = query.lower()
+
+# --- Profile ---
+poc_pats = [r'가능한가', r'될까', r'poc', r'테스트', r'검증', r'feasib', r'prototype']
+exp_pats = [r'최신\s*연구', r'논문', r'트렌드', r'탐색', r'이론', r'survey', r'sota', r'research\s+trend']
+pra_pats = [r'구현', r'적용', r'방법', r'도구', r'솔루션', r'어떤.*좋', r'how\s+to', r'implement', r'production']
+
+def mc(pats, t):
+    return sum(1 for p in pats if re.search(p, t))
+
+ps, es, ds = mc(poc_pats, ql), mc(exp_pats, ql), mc(pra_pats, ql)
+profile = "poc" if ps > es and ps > ds else "exploration" if es > ps and es > ds else "default"
+
+# --- Complexity ---
+wc = len(query.split())
+has_cmp = bool(re.search(r'(vs|versus|비교|compare)', ql))
+has_multi = len(re.findall(r'(and|와|과|및|\+|,)', ql)) >= 2
+has_deep = bool(re.search(r'(심층|종합|comprehensive|thorough|deep)', ql))
+if wc > 20 or (has_cmp and has_multi) or has_deep:
+    cx, wk = 3, {"min":5,"max":8}
+elif wc > 10 or has_cmp or has_multi:
+    cx, wk = 2, {"min":3,"max":4}
+else:
+    cx, wk = 1, {"min":1,"max":2}
+
+# --- Recency ---
+dm = {"surface":"1y","standard":"2y","deep":"5y"}
+rec = dm.get(depth, "2y")
+if re.search(r'(최신|latest|recent|2026)', ql): rec = "1y"
+elif re.search(r'(역사|history|evolution)', ql): rec = "5y"
+
+print(json.dumps({
+    "profile": profile,
+    "complexity": cx,
+    "workers": wk,
+    "recency": rec,
+    "depth": depth
+}, ensure_ascii=False))
+PYEOF
+}
+
+case "${1:-help}" in
+    profile)    cmd_profile "$2" ;;
+    complexity) cmd_complexity "$2" ;;
+    recency)    cmd_recency "$2" "${3:-standard}" ;;
+    all)        cmd_all "$2" "${3:-standard}" ;;
+    help)       usage ;;
+    *)          usage ;;
+esac

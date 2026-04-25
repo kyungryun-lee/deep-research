@@ -243,6 +243,17 @@ knowledge_json 구조:
 }
 ```
 
+## Part 4: Knowledge 진화 (A-Mem 자동 링크)
+
+Knowledge 저장 후 관련 기존 주제와 자동 크로스링크를 생성합니다:
+
+```bash
+${PLUGIN_DIR}/bin/dr-knowledge evolve --topic "{리서치 주제}"
+```
+
+이를 통해 새 knowledge가 기존 knowledge와 자동으로 연결되어
+다음 리서치 시 관련 지식을 더 효과적으로 검색할 수 있습니다.
+
 ## 최종 출력
 
 보고서 저장 완료 후 오케스트레이터에게 반환할 요약:

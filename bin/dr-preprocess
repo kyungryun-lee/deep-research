@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Deep Research Preprocess CLI — Phase 3.5 Parallel Execution
+# Runs all 7 independent harness steps in parallel for ~70% speedup
+# Input: JSON with urls, sources_with_years, claim_evidence, report_markdown
+# Output: Combined code_metrics JSON
+
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+    cat <<'EOF'
+Deep Research Preprocess — Phase 3.5 Parallel Execution
+
+Usage: dr-preprocess <command> [args]
+
+Commands:
+  run --findings <path> --urls <path> --sources <path> --claims <path>
+      Run all Phase 3.5 steps in parallel and combine results
+  help                      Show this help
+
+Input files (JSON):
+  --findings <path>   Worker findings text file
+  --urls <path>       JSON array of URLs
+  --sources <path>    JSON array of {"url":"...","year":2026}
+  --claims <path>     JSON array of claim-evidence objects
+
+Output: Combined JSON with all code_metrics
+EOF
+}
+
+cmd_run() {
+    local findings="" urls="" sources="" claims=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --findings) findings="$2"; shift 2 ;;
+            --urls) urls="$2"; shift 2 ;;
+            --sources) sources="$2"; shift 2 ;;
+            --claims) claims="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Create temp dir for parallel outputs
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    # --- Run all 7 steps in parallel ---
+
+    # 3.5.1 Dedup (text)
+    if [ -n "$findings" ] && [ -f "$findings" ]; then
+        cat "$findings" | "$PLUGIN_DIR/bin/dr-dedup" text > "$tmpdir/dedup.json" 2>/dev/null &
+    else
+        echo '{"has_duplicates":false,"total_urls":0}' > "$tmpdir/dedup.json" &
+    fi
+
+    # 3.5.2 Classify (urls)
+    if [ -n "$urls" ] && [ -f "$urls" ]; then
+        cat "$urls" | "$PLUGIN_DIR/bin/dr-verify" classify > "$tmpdir/classify.json" 2>/dev/null &
+    else
+        echo '{"classifications":[],"ai_review_needed":[]}' > "$tmpdir/classify.json" &
+    fi
+
+    # 3.5.3 Check URLs
+    if [ -n "$urls" ] && [ -f "$urls" ]; then
+        cat "$urls" | "$PLUGIN_DIR/bin/dr-verify" check-urls > "$tmpdir/urlcheck.json" 2>/dev/null &
+    else
+        echo '{"results":[],"total":0}' > "$tmpdir/urlcheck.json" &
+    fi
+
+    # 3.5.4 Diversity (Shannon entropy)
+    if [ -n "$urls" ] && [ -f "$urls" ]; then
+        cat "$urls" | "$PLUGIN_DIR/bin/dr-score" diversity > "$tmpdir/diversity.json" 2>/dev/null &
+    else
+        echo '{"entropy":0,"unique_domains":0,"total":0}' > "$tmpdir/diversity.json" &
+    fi
+
+    # 3.5.5 Recency
+    if [ -n "$sources" ] && [ -f "$sources" ]; then
+        cat "$sources" | "$PLUGIN_DIR/bin/dr-score" recency > "$tmpdir/recency.json" 2>/dev/null &
+    else
+        echo '{"score":0,"recent_ratio":0,"total":0,"recency_score":0}' > "$tmpdir/recency.json" &
+    fi
+
+    # 3.5.6 Cross-reference density
+    if [ -n "$claims" ] && [ -f "$claims" ]; then
+        cat "$claims" | "$PLUGIN_DIR/bin/dr-score" xref > "$tmpdir/xref.json" 2>/dev/null &
+    else
+        echo '{"density":0,"multi_cited":0,"total":0}' > "$tmpdir/xref.json" &
+    fi
+
+    # 3.5.7 Structure
+    if [ -n "$findings" ] && [ -f "$findings" ]; then
+        cat "$findings" | "$PLUGIN_DIR/bin/dr-score" structure > "$tmpdir/structure.json" 2>/dev/null &
+    else
+        echo '{"score":0,"structure_score":0,"headings":{},"balance":0,"word_count":0}' > "$tmpdir/structure.json" &
+    fi
+
+    # Wait for all parallel jobs
+    wait
+
+    # --- Combine results ---
+    python3 - "$tmpdir" << 'PYEOF'
+import json, sys, os
+
+tmpdir = sys.argv[1]
+
+def load_json(name):
+    path = os.path.join(tmpdir, name)
+    try:
+        with open(path) as f:
+            return json.loads(f.read())
+    except:
+        return {}
+
+dedup = load_json("dedup.json")
+classify = load_json("classify.json")
+urlcheck = load_json("urlcheck.json")
+diversity = load_json("diversity.json")
+recency = load_json("recency.json")
+xref = load_json("xref.json")
+structure = load_json("structure.json")
+
+# Build code_metrics (for Evaluator)
+code_metrics = {
+    "diversity_entropy": diversity.get("entropy", 0),
+    "unique_domains": diversity.get("unique_domains", 0),
+    "recency_score": recency.get("recency_score", 0),
+    "recent_ratio": recency.get("recent_ratio", 0),
+    "xref_density": xref.get("density", 0),
+    "multi_cited": xref.get("multi_cited", 0),
+    "structure_score": structure.get("score", 0),
+    "balance": structure.get("balance", 0),
+    "word_count": structure.get("word_count", 0),
+}
+
+result = {
+    "code_metrics": code_metrics,
+    "dedup_result": dedup,
+    "classify_result": classify,
+    "url_check_result": urlcheck,
+    "diversity": diversity,
+    "recency": recency,
+    "xref": xref,
+    "structure": structure,
+    "parallel_steps": 7,
+    "status": "completed"
+}
+
+print(json.dumps(result, ensure_ascii=False, indent=2))
+PYEOF
+
+    # Cleanup
+    rm -rf "$tmpdir"
+}
+
+case "${1:-help}" in
+    run)   shift; cmd_run "$@" ;;
+    help)  usage ;;
+    *)     usage ;;
+esac

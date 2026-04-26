@@ -149,14 +149,23 @@ if not hard_floor:
     hard_floor = weights.get('hard_floor', None)
 
 hard_floor_applied = False
+floor_dim = None
+floor_threshold = 0
+floor_cap = 50
 if hard_floor and isinstance(hard_floor, dict):
-    floor_dim = list(hard_floor.keys())[0] if hard_floor else None
-    if floor_dim and floor_dim != 'cap':
-        floor_threshold = hard_floor.get(floor_dim, 0)
-        floor_cap = hard_floor.get('cap', 50)
-        if floor_dim in scores and scores[floor_dim] < floor_threshold:
-            total = min(total, floor_cap)
-            hard_floor_applied = True
+    # Explicit pop to avoid key-order dependence:
+    # rubric may serialize {"cap": 50, "accuracy": 40} or {"accuracy": 40, "cap": 50}.
+    hf = dict(hard_floor)
+    floor_cap = hf.pop('cap', 50)
+    # Remaining key(s) are dimension thresholds; pick first that maps to a real score
+    for k, v in hf.items():
+        if k in scores:
+            floor_dim = k
+            floor_threshold = v
+            break
+    if floor_dim and scores.get(floor_dim, 0) < floor_threshold:
+        total = min(total, floor_cap)
+        hard_floor_applied = True
 
 verdict = "PASS" if total >= target else "FAIL"
 

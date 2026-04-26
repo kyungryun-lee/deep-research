@@ -59,11 +59,14 @@ ${PLUGIN_DIR}/bin/dr-research "{query}" --depth {depth} --rubric {rubric} --dry-
 
 ## 성능 규칙
 
-### 모델 라우팅 기준
+### 모델 라우팅 기준 (Opus 4.7 환경)
 - Planner (sonnet/medium): 전략 수립은 Sonnet으로 충분 (SWE-bench 1.2pt 차이)
 - Worker (sonnet/medium): 정보 수집에 medium effort 필수 (low는 탐색 깊이 축소)
-- Evaluator (opus/high): 품질 판단에 최고 모델+충분한 thinking 필요
-- Synthesizer (opus/medium): 종합 추론에 Opus 필요, effort medium (32K 출력 제한 대응)
+  - ⚠️ **Worker는 Opus 4.7로 업그레이드 금지**: BrowseComp 79.3 vs Opus 4.6의 83.7로 -4.4pt 후퇴 ([Vellum 2026-04](https://www.vellum.ai/blog/claude-opus-4-7-benchmarks-explained)). 웹 리서치는 Sonnet 4.6 또는 Opus 4.6 유지.
+- Evaluator (opus/high): 품질 판단에 최고 모델 + Opus 4.7 **adaptive thinking** (자동 발동, off-by-default이나 복잡 판단 시 자동 engage)
+- Synthesizer (opus/medium): 종합 추론에 Opus 필요, effort medium
+  - 출력 제한: Opus 4.7은 128K output, 새 tokenizer로 동일 텍스트가 1.0-1.35× 토큰 → 32K 분할 임계값은 **24K~28K로 보수적 보정 권장**
+  - findings token < 200K → 1-pass 합성, ≥ 200K → subagent 분기 (P1-2에서 게이트화 예정)
 
 ### AI vs 코드 분리 원칙 (하네스 아키텍처)
 "모델이 판단, 하네스가 실행" — Claude Code 98.4%가 결정론적 코드 (arXiv 2604.14228)
@@ -114,6 +117,8 @@ mode = --mode 값 (미지정시 "research-only")
 memory_path = ${CLAUDE_PLUGIN_DATA}/memory
 max_iterations = 3
 iteration = 0
+max_hard_rejects = 2     # Phase 3.6 무한루프 차단 (3.6 → 3C → 3.5 → 3.6 순환 방지)
+hard_reject_count = 0
 ```
 
 사용자에게 시작을 알립니다:
@@ -472,17 +477,25 @@ if code_metrics.word_count < 200:
 ```
 
 **hard_reject = true**이면:
+- `hard_reject_count = hard_reject_count + 1` (먼저 카운터 증가)
 - Evaluator 호출 **생략** (Opus 토큰 절약)
 - 사용자에게 거부 사유 알림
-- Phase 3C 심화 검색으로 직접 이동 (보완 후 재검증)
 
 ```
-[Hard-Reject] 코드 메트릭 기준 미달 — Evaluator 생략
-  사유: {reject_reasons}
-  → 보완 Worker 실행 후 재검증
+if hard_reject_count >= max_hard_rejects:
+    # 무한루프 방지: 한도 초과 시 현재 결과로 Phase 5 직행
+    [Hard-Reject 한도 초과] hard_reject_count={hard_reject_count} ≥ max_hard_rejects={max_hard_rejects}
+      사유: {reject_reasons}
+      → 더 이상 보완 시도하지 않고 현재 결과로 Phase 5 진행 (품질 경고 포함)
+    Phase 5로 직행 (보고서에 [품질 경고] 섹션 추가, 사용자에게 재시도 권고)
+else:
+    [Hard-Reject {hard_reject_count}/{max_hard_rejects}] 코드 메트릭 기준 미달 — Evaluator 생략
+      사유: {reject_reasons}
+      → 보완 Worker 실행 후 재검증
+    Phase 3C 심화 검색으로 이동 (보완 후 재검증)
 ```
 
-**hard_reject = false**이면 Phase 4로 정상 진행.
+**hard_reject = false**이면 Phase 4로 정상 진행 (`hard_reject_count` 리셋하지 않음 — 누적 카운터 유지).
 
 ---
 
@@ -583,9 +596,11 @@ echo '{evaluator_scores_json}' | ${PLUGIN_DIR}/bin/dr-score calc --rubric {rubri
 **P0-1 압축 적용으로 앙상블 추가 토큰 사용이 상쇄됨** (압축 40-60% 절약 > 앙상블 2x 토큰).
 
 Position Debiasing 규칙:
-- 1차: `dr-preprocess --shuffle` 결과 사용
-- 2차: findings를 역순으로 재배치 (Worker N→1 순서)
-- 3차 (deep만): 완전 랜덤 셔플
+- 1차: `dr-preprocess --shuffle` → 결과 JSON의 `shuffled_findings_path`를 Evaluator 입력으로 사용 (원본 findings는 Synthesizer용으로 보존)
+- 2차: findings를 역순으로 재배치 (Worker N→1 순서) — 별도 tmpfile에 작성
+- 3차 (deep만): 완전 랜덤 셔플 — 별도 tmpfile에 작성
+
+⚠️ 원본 findings 파일은 절대 in-place 수정하지 않습니다. 모든 셔플은 임시 파일 출력. Evaluator 종료 후 caller가 임시 파일 정리 (`rm "$SHUFFLED"`).
 
 ### KPR/KPC 보고서 정합성 검증 (코드 — AI 호출 0)
 
@@ -962,6 +977,7 @@ Git 반영 절차:
 - Worker는 항상 병렬로 호출합니다 (순차 금지)
 - Evaluator는 반드시 독립 컨텍스트에서 실행합니다
 - iteration 카운터는 Phase 4 시작 시에만 증가합니다
+- hard_reject_count는 Phase 3.6에서 hard_reject=true일 때마다 증가하며, max_hard_rejects(=2) 도달 시 Phase 5 직행 (3.6→3C→3.5→3.6 무한루프 차단)
 - max_iterations를 초과하면 반드시 루프를 종료합니다
 - 보고서에는 소스에서 확인된 사실만 포함합니다
 - 사용자 질문과 수집 결과는 XML 태그로 감싸서 에이전트에 전달합니다

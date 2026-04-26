@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "KNOWLEDGE_DIR=\"${CLAUDE_PLUGIN_DATA}/knowledge\"; if [ -d \"$KNOWLEDGE_DIR\" ]; then SUMMARY=$(ls \"$KNOWLEDGE_DIR\"/*.json 2>/dev/null | head -5 | xargs -I{} python3 -c \"import json,sys; d=json.load(open(sys.argv[1])); print(d.get('topic',''))\" {} 2>/dev/null | tr '\\n' ', ' | sed 's/, $//'); if [ -n \"$SUMMARY\" ]; then echo \"{\\\"additionalContext\\\": \\\"[DR Knowledge] Cached topics: $SUMMARY — dr-knowledge match may find relevant prior research\\\"}\"; exit 0; fi; fi; echo '{\"suppressOutput\": true}'",
+            "command": "KNOWLEDGE_DIR=\"${CLAUDE_PLUGIN_DATA}/knowledge\"; if [ -d \"$KNOWLEDGE_DIR\" ]; then SUMMARY=$(ls \"$KNOWLEDGE_DIR\"/*.json 2>/dev/null | head -5 | xargs -I{} python3 -c \"import json,sys; d=json.load(open(sys.argv[1])); print(d.get('topic',''))\" {} 2>/dev/null | tr '\\n' ',' | sed 's/,$//'); if [ -n \"$SUMMARY\" ]; then python3 -c \"import json,sys; print(json.dumps({'additionalContext': '[DR Knowledge] Cached topics: ' + sys.argv[1] + ' — dr-knowledge match may find relevant prior research'}))\" \"$SUMMARY\"; exit 0; fi; fi; echo '{\"suppressOutput\": true}'",
             "timeout": 8
           }
         ]
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CACHE_DIR=\"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\"; HASH=$(echo \"$TOOL_INPUT\" | md5sum | cut -c1-12); echo \"$TOOL_OUTPUT\" > \"$CACHE_DIR/$HASH.txt\" 2>/dev/null; echo '{\"suppressOutput\": true}'",
+            "command": "CACHE_DIR=\"${CLAUDE_PLUGIN_DATA}/cache/web-fetch\"; mkdir -p \"$CACHE_DIR\" 2>/dev/null; URL_FROM_INPUT=$(printf '%s' \"$TOOL_INPUT\" | python3 -c \"import json,sys; d=json.loads(sys.stdin.read()); print(d.get('url','') if isinstance(d,dict) else '')\" 2>/dev/null); HASH_KEY=\"${URL_FROM_INPUT:-$TOOL_INPUT}\"; HASH=$(printf '%s' \"$HASH_KEY\" | md5sum | cut -c1-12); ( umask 077 && printf '%s' \"$TOOL_OUTPUT\" > \"$CACHE_DIR/$HASH.txt\" ) 2>/dev/null; echo '{\"suppressOutput\": true}'",
             "timeout": 5
           }
         ]

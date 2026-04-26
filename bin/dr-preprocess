@@ -61,9 +61,13 @@ cmd_run() {
         esac
     done
 
-    # Position debiasing: shuffle worker sections in findings
+    # Position debiasing: produce shuffled COPY (preserves original findings file)
+    # Output path is reported in result JSON as `shuffled_findings_path` for caller to use
+    # with Evaluator. Caller is responsible for cleanup.
+    local shuffled_path=""
     if [ "$shuffle" = true ] && [ -n "$findings" ] && [ -f "$findings" ]; then
-        python3 -c "
+        shuffled_path=$(mktemp --suffix=-findings-shuffled.txt)
+        python3 - "$findings" "$shuffled_path" << 'PYEOF'
 import sys, re, random
 with open(sys.argv[1]) as f:
     text = f.read()
@@ -71,16 +75,18 @@ with open(sys.argv[1]) as f:
 parts = re.split(r'(=== Worker \w+:)', text)
 if len(parts) > 2:
     header = parts[0]
-    # Group marker+content pairs
     sections = []
     for i in range(1, len(parts), 2):
         marker = parts[i]
         content = parts[i+1] if i+1 < len(parts) else ''
         sections.append(marker + content)
     random.shuffle(sections)
-    with open(sys.argv[1], 'w') as f:
-        f.write(header + ''.join(sections))
-" "$findings"
+    out_text = header + ''.join(sections)
+else:
+    out_text = text
+with open(sys.argv[2], 'w') as f:
+    f.write(out_text)
+PYEOF
     fi
 
     # Create temp dir for parallel outputs
@@ -142,10 +148,11 @@ if len(parts) > 2:
     wait
 
     # --- Combine results ---
-    python3 - "$tmpdir" << 'PYEOF'
+    python3 - "$tmpdir" "$shuffled_path" << 'PYEOF'
 import json, sys, os
 
 tmpdir = sys.argv[1]
+shuffled_path = sys.argv[2] if len(sys.argv) > 2 else ""
 
 def load_json(name):
     path = os.path.join(tmpdir, name)
@@ -186,6 +193,7 @@ result = {
     "xref": xref,
     "structure": structure,
     "parallel_steps": 7,
+    "shuffled_findings_path": shuffled_path or None,
     "status": "completed"
 }
 

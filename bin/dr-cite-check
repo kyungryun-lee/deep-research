@@ -40,7 +40,7 @@ cmd_validate() {
     cat > "$tmpfile"
 
     python3 - "$tmpfile" << 'PYEOF'
-import json, sys, re
+import json, sys, re, os, hashlib
 from collections import Counter
 
 with open(sys.argv[1]) as f:
@@ -54,6 +54,34 @@ for src in data.get("sources", []):
     content = src.get("content", "")
     if url and content:
         source_content[url] = content.lower()
+
+# Auto-load cached web-fetch content from PostToolUse cache
+CACHE_DIR = os.path.join(
+    os.environ.get("CLAUDE_PLUGIN_DATA", os.path.expanduser("~/.claude/plugins/data/deep-research")),
+    "cache", "web-fetch"
+)
+def url_cache_path(url):
+    h = hashlib.md5(url.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(CACHE_DIR, f"{h}.txt")
+
+cache_loaded = 0
+cache_lookups = 0
+if os.path.isdir(CACHE_DIR):
+    referenced_urls = {ev.get("url","") for c in claims for ev in c.get("evidence", []) if ev.get("url")}
+    for url in referenced_urls:
+        if url in source_content:
+            continue
+        cache_lookups += 1
+        cp = url_cache_path(url)
+        if os.path.isfile(cp):
+            try:
+                with open(cp, encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                if content.strip():
+                    source_content[url] = content.lower()
+                    cache_loaded += 1
+            except Exception:
+                pass
 
 def tokenize(text):
     """Extract meaningful tokens from text"""
@@ -133,12 +161,13 @@ for claim in claims:
             elif status == "weak" and best_status != "valid":
                 best_status = "weak"
         else:
-            # Source content not cached — can't verify, mark as unchecked
+            # Source content not in input nor in PostToolUse cache — degrade to weak
+            # (was 'unchecked' previously; that escaped phantom-filter scrutiny in SKILL.md)
             evidence_results.append({
-                "url": url, "status": "unchecked", "reason": "source content not cached"
+                "url": url, "status": "weak", "reason": "source content unavailable (not in input, not in web-fetch cache)"
             })
             if best_status == "phantom":
-                best_status = "unchecked"
+                best_status = "weak"
 
     results.append({
         "claim_id": claim_id,
@@ -164,7 +193,12 @@ summary = {
 
 print(json.dumps({
     "results": results,
-    "summary": summary
+    "summary": summary,
+    "cache_stats": {
+        "lookups": cache_lookups,
+        "hits": cache_loaded,
+        "hit_rate_pct": round(cache_loaded / cache_lookups * 100, 1) if cache_lookups else 0
+    }
 }, ensure_ascii=False, indent=2))
 PYEOF
     rm -f "$tmpfile"

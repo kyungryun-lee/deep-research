@@ -170,7 +170,10 @@ import json, sys, re
 query, depth = sys.argv[1], sys.argv[2]
 ql = query.lower()
 
-# --- Profile ---
+# --- Profile (5종: compliance/comparative/poc/exploration/default) ---
+# cmd_profile과 동일한 분류 기준 사용 — 5종 모두 지원
+compliance_pats = [r'규정', r'법률', r'컴플라이언스', r'compliance', r'regulation', r'gdpr', r'iso\s*\d', r'audit', r'감사', r'정책', r'policy']
+comparative_pats = [r'비교', r'compare', r'vs\b', r'versus', r'차이', r'difference', r'대안', r'alternative']
 poc_pats = [r'가능한가', r'될까', r'poc', r'테스트', r'검증', r'feasib', r'prototype']
 exp_pats = [r'최신\s*연구', r'논문', r'트렌드', r'탐색', r'이론', r'survey', r'sota', r'research\s+trend']
 pra_pats = [r'구현', r'적용', r'방법', r'도구', r'솔루션', r'어떤.*좋', r'how\s+to', r'implement', r'production']
@@ -178,8 +181,23 @@ pra_pats = [r'구현', r'적용', r'방법', r'도구', r'솔루션', r'어떤.*
 def mc(pats, t):
     return sum(1 for p in pats if re.search(p, t))
 
+cs = mc(compliance_pats, ql)
+cmps = mc(comparative_pats, ql)
 ps, es, ds = mc(poc_pats, ql), mc(exp_pats, ql), mc(pra_pats, ql)
-profile = "poc" if ps > es and ps > ds else "exploration" if es > ps and es > ds else "default"
+
+# Priority: compliance/comparative 우선 (규제·비교 분석은 default로 떨어지면 안 됨)
+scores = {"compliance": cs, "comparative": cmps, "poc": ps, "exploration": es, "default": ds}
+max_score = max(scores.values())
+if cs == max_score and cs > 0:
+    profile = "compliance"
+elif cmps == max_score and cmps > 0:
+    profile = "comparative"
+elif ps == max_score and ps > 0:
+    profile = "poc"
+elif es == max_score and es > 0:
+    profile = "exploration"
+else:
+    profile = "default"
 
 # --- Complexity ---
 wc = len(query.split())

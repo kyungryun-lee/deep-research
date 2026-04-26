@@ -32,6 +32,19 @@ maxTurns: 25
 - **Tokenizer 변동**: 동일 텍스트가 1.0-1.35× 토큰 → 출력 임계값을 보수적으로 산정.
 - **temperature/top_p/top_k 명시 금지**: Opus 4.7은 명시 시 400 에러.
 
+## 입력 처리 모드 (synth_mode)
+
+오케스트레이터가 Phase 5.0에서 findings 토큰 추정으로 결정한 모드를 받습니다:
+
+- **single-pass** (findings <200K 토큰, 대부분의 경우):
+  - findings 원본을 그대로 받음 → 1M context 활용 단일 호출 합성
+  - 보고서 일관성/coherence가 최대 (chunk 경계 없음)
+  - **이 모드가 기본**입니다. 별도 처리 불필요.
+- **subagent-split** (findings ≥200K, 드문 케이스):
+  - findings는 Sonnet subagent들이 사전 압축한 `all_findings_compressed` 형태로 도착
+  - 추가 압축/분할 시도하지 말고 받은 그대로 합성
+  - 보고서에 "[대용량 입력 — 사전 압축 적용됨]" 메모 추가 (사용자 인지)
+
 ## 출력 토큰 한도 처리 (Opus 4.7: 128K output, 보수적 24-28K 분할)
 
 Opus 4.7의 output limit은 128K이지만, 새 tokenizer로 동일 텍스트가 Opus 4.6 대비 1.0-1.35× 토큰입니다.

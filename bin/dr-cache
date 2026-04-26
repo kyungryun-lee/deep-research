@@ -186,7 +186,7 @@ cmd_semantic_match() {
     mkdir -p "$QUERY_DIR" 2>/dev/null
 
     python3 - "$QUERY_DIR" "$query" "$threshold" << 'PYEOF'
-import json, sys, os, re, math
+import json, sys, os, re, math, unicodedata
 from collections import Counter
 from datetime import datetime, timedelta
 
@@ -201,7 +201,8 @@ STOPWORDS = {
 }
 
 def tokenize(text):
-    tokens = re.findall(r'[a-z0-9가-힣]+', text.lower())
+    # NFC normalize → handle composed/decomposed Korean (must match dr-normalize/dr-cite-check)
+    tokens = re.findall(r'[a-z0-9가-힣]+', unicodedata.normalize('NFC', text).lower())
     return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
 
 def cosine(a, b):

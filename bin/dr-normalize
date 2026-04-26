@@ -26,8 +26,19 @@ EOF
 # Shared Python normalize logic — single source of truth
 _run_normalize_py() {
     python3 - "$@" << 'PYEOF'
-import json, re, hashlib, math, sys
+import json, re, hashlib, math, sys, unicodedata
 from collections import Counter
+
+# Korean Unicode tokenizer (unified across dr-normalize / dr-cache / dr-cite-check)
+# - NFC normalization first to handle composed (precomposed syllable 한) vs
+#   decomposed (jamo ㅎ+ㅏ+ㄴ) input from different IMEs
+# - Pattern: ASCII alphanumeric + Hangul Syllables block (U+AC00..U+D7A3)
+# - No hyphen handling — cache key consistency over compound-word preservation
+KOREAN_TOKEN_PATTERN = r'[a-z0-9가-힣]+'
+
+def kor_tokenize(text):
+    """Unified tokenizer: NFC normalize + lowercase + extract alphanumeric+Hangul tokens"""
+    return re.findall(KOREAN_TOKEN_PATTERN, unicodedata.normalize('NFC', text).lower())
 
 SYNONYMS = {
     "vs": "versus", "vs.": "versus",
@@ -61,9 +72,10 @@ STOPWORDS = {
 }
 
 def normalize_query(query):
-    normalized = query.lower().strip()
+    # NFC normalize first \u2192 unify composed/decomposed Korean before any processing
+    normalized = unicodedata.normalize('NFC', query).lower().strip()
     normalized = re.sub(r'["\'\(\)\[\]\{\}<>]', ' ', normalized)
-    tokens = re.findall(r'[a-z0-9\uac00-\ud7a3][-a-z0-9\uac00-\ud7a3]*', normalized)
+    tokens = re.findall(KOREAN_TOKEN_PATTERN, normalized)
     mapped = []
     for t in tokens:
         t_clean = t.strip('-')
@@ -89,7 +101,7 @@ def normalize_query(query):
     }
 
 def tokenize(text):
-    tokens = re.findall(r'[a-z0-9\uac00-\ud7a3]+', text.lower())
+    tokens = re.findall(KOREAN_TOKEN_PATTERN, unicodedata.normalize('NFC', text).lower())
     return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
 
 def cosine(a, b):

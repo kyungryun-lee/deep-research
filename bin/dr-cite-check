@@ -40,7 +40,7 @@ cmd_validate() {
     cat > "$tmpfile"
 
     python3 - "$tmpfile" << 'PYEOF'
-import json, sys, re, os, hashlib
+import json, sys, re, os, hashlib, unicodedata
 from collections import Counter
 
 with open(sys.argv[1]) as f:
@@ -84,8 +84,8 @@ if os.path.isdir(CACHE_DIR):
                 pass
 
 def tokenize(text):
-    """Extract meaningful tokens from text"""
-    return set(re.findall(r'[a-z0-9\uac00-\ud7a3]{2,}', text.lower()))
+    """Extract meaningful tokens from text (NFC-normalized for Korean consistency)"""
+    return set(re.findall(r'[a-z0-9\uac00-\ud7a3]{2,}', unicodedata.normalize('NFC', text).lower()))
 
 def keyword_overlap(claim_text, source_text):
     """Calculate keyword overlap between claim and source"""

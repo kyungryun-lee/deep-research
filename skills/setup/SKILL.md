@@ -106,10 +106,12 @@ wc -l "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/memory/se
 1. **기본 리서치 깊이** (surface / standard / deep)
    - "빠른 조회가 많으면 surface, 심층 조사가 많으면 deep을 추천합니다"
 
-2. **기본 평가 기준** (default / academic / practical / trend)
-   - "학술 논문 조사가 주 업무면 academic"
-   - "구현 방법 조사가 주 업무면 practical"
-   - "시장/기술 동향 파악이 주 업무면 trend"
+2. **기본 평가 기준** (default / poc / exploration / compliance / comparative)
+   - "실무 솔루션 조사 (검증된 방법 + 즉시 실행)이 주 업무면 default"
+   - "PoC/개념 증명/가능성 검증이 주 업무면 poc"
+   - "신기술/SOTA/탐색 조사가 주 업무면 exploration"
+   - "규정/감사/법률 (정확성+인용 엄격)이 주 업무면 compliance"
+   - "다중 대안 비교/의사결정 지원이 주 업무면 comparative"
 
 3. **최대 반복 횟수** (1-5)
    - "1: 빠르지만 품질 보증 없음"
@@ -132,7 +134,7 @@ wc -l "${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/deep-research}/memory/se
     "deep-research": {
       "config": {
         "default_depth": "standard",
-        "default_rubric": "practical",
+        "default_rubric": "default",
         "max_iterations": "3",
         "output_dir": "./research-reports"
       }

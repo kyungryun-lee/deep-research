@@ -42,6 +42,30 @@ STOPWORDS_EXTENDED = STOPWORDS_EN | frozenset({
     'once', 'rarely', 'hardly', 'fewer', 'lower',
 })
 
+# Negation / polarity tokens (used by dr-contradict for conflict detection)
+NEGATION_EN = frozenset({
+    'not', 'no', 'never', 'without', 'lack', 'fail', 'cannot', 'dont',
+    'doesnt', 'isnt', 'arent', 'wont', 'shouldnt', 'unable', 'impossible',
+    'neither', 'nor', 'rarely', 'hardly', 'fewer', 'worse', 'slower',
+    'less', 'lower', 'decrease', 'decline', 'drop', 'reduce',
+})
+NEGATION_KO = frozenset({
+    '없', '아닌', '불가', '못', '실패', '부족', '감소', '하락',
+    '저하', '약화', '제한', '불가능', '어려', '않',
+})
+NEGATIONS = NEGATION_EN | NEGATION_KO
+
+COMPARATIVES_POS = frozenset({
+    'faster', 'better', 'higher', 'more', 'outperform', 'superior',
+    'improve', 'increase', 'exceed', 'surpass',
+    '빠른', '우수', '향상',
+})
+COMPARATIVES_NEG = frozenset({
+    'slower', 'worse', 'lower', 'less', 'underperform', 'inferior',
+    'decrease', 'decline', 'lag',
+    '느린', '열등', '저하',
+})
+
 
 def tokenize(text, *, normalize=True, stopwords=None, min_len=2, as_set=False):
     """Unified tokenizer.

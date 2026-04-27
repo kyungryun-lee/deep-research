@@ -91,52 +91,57 @@ if not os.path.exists(log_path):
     print(json.dumps({"error": "No usage data yet. Use 'dr-tokens record' to start tracking."}))
     sys.exit(0)
 
-entries = []
+# Streaming aggregation — never hold full entry list in memory.
+# Group per-session into compact dicts; pick target session at the end.
+all_sessions = {}  # session_id -> {"phases": {...}, "models": {...}, "total_input", "total_output"}
+
 with open(log_path) as f:
     for line in f:
         line = line.strip()
-        if line:
-            entries.append(json.loads(line))
+        if not line:
+            continue
+        e = json.loads(line)
+        sid = e["session"]
+        s = all_sessions.setdefault(sid, {
+            "phases": {},
+            "models": {},
+            "total_input": 0,
+            "total_output": 0,
+        })
+        p = e["phase"]
+        ph = s["phases"].setdefault(p, {"input": 0, "output": 0, "calls": 0, "models": set()})
+        ph["input"] += e["input_tokens"]
+        ph["output"] += e["output_tokens"]
+        ph["calls"] += 1
+        ph["models"].add(e["model"])
 
-if not entries:
+        m = e["model"]
+        mm = s["models"].setdefault(m, {"input": 0, "output": 0, "calls": 0})
+        mm["input"] += e["input_tokens"]
+        mm["output"] += e["output_tokens"]
+        mm["calls"] += 1
+
+        s["total_input"] += e["input_tokens"]
+        s["total_output"] += e["output_tokens"]
+
+if not all_sessions:
     print(json.dumps({"error": "No usage data found"}))
     sys.exit(0)
 
-# Get target session (default: latest)
-sessions = sorted(set(e["session"] for e in entries))
-if target_session:
-    session_entries = [e for e in entries if e["session"] == target_session]
-else:
-    target_session = sessions[-1]
-    session_entries = [e for e in entries if e["session"] == target_session]
+# Pick target session (default: latest by sorted id)
+sessions_sorted = sorted(all_sessions.keys())
+if not target_session:
+    target_session = sessions_sorted[-1]
 
-if not session_entries:
-    print(json.dumps({"error": f"Session '{target_session}' not found", "available": sessions}))
+if target_session not in all_sessions:
+    print(json.dumps({"error": f"Session '{target_session}' not found", "available": sessions_sorted}))
     sys.exit(0)
 
-# Aggregate by phase
-phases = {}
-for e in session_entries:
-    p = e["phase"]
-    if p not in phases:
-        phases[p] = {"input": 0, "output": 0, "calls": 0, "models": set()}
-    phases[p]["input"] += e["input_tokens"]
-    phases[p]["output"] += e["output_tokens"]
-    phases[p]["calls"] += 1
-    phases[p]["models"].add(e["model"])
-
-# Aggregate by model
-models = {}
-for e in session_entries:
-    m = e["model"]
-    if m not in models:
-        models[m] = {"input": 0, "output": 0, "calls": 0}
-    models[m]["input"] += e["input_tokens"]
-    models[m]["output"] += e["output_tokens"]
-    models[m]["calls"] += 1
-
-total_input = sum(e["input_tokens"] for e in session_entries)
-total_output = sum(e["output_tokens"] for e in session_entries)
+session = all_sessions[target_session]
+phases = session["phases"]
+models = session["models"]
+total_input = session["total_input"]
+total_output = session["total_output"]
 total_tokens = total_input + total_output
 
 report = {
@@ -206,22 +211,20 @@ if not os.path.exists(log_path):
     print(json.dumps({"sessions": [], "message": "No usage history yet"}))
     sys.exit(0)
 
-entries = []
+# Streaming aggregation by session id (no full-file load)
+sessions = {}
 with open(log_path) as f:
     for line in f:
         line = line.strip()
-        if line:
-            entries.append(json.loads(line))
-
-sessions = {}
-for e in entries:
-    s = e["session"]
-    if s not in sessions:
-        sessions[s] = {"input": 0, "output": 0, "phases": 0, "models": set()}
-    sessions[s]["input"] += e["input_tokens"]
-    sessions[s]["output"] += e["output_tokens"]
-    sessions[s]["phases"] += 1
-    sessions[s]["models"].add(e["model"])
+        if not line:
+            continue
+        e = json.loads(line)
+        s = e["session"]
+        d = sessions.setdefault(s, {"input": 0, "output": 0, "phases": 0, "models": set()})
+        d["input"] += e["input_tokens"]
+        d["output"] += e["output_tokens"]
+        d["phases"] += 1
+        d["models"].add(e["model"])
 
 result = []
 for sid in sorted(sessions.keys(), reverse=True)[:limit]:

@@ -25,73 +25,52 @@ cmd_profile() {
     python3 - "$query" << 'PYEOF'
 import json, sys, re
 
-query = sys.argv[1].lower()
-
-# PoC/validation patterns
-poc_patterns = [
-    r'가능한가', r'될까', r'poc', r'테스트', r'검증',
-    r'feasib', r'can\s+we', r'possible', r'prototype',
-    r'validate', r'proof\s+of\s+concept', r'시도'
-]
-
-# Exploration/research patterns
-explore_patterns = [
-    r'최신\s*연구', r'논문', r'트렌드', r'탐색', r'이론',
-    r'survey', r'state[\s-]*of[\s-]*the[\s-]*art', r'sota',
-    r'research\s+trend', r'emerging', r'frontier', r'방향'
-]
-
-# Compliance/audit patterns
-compliance_patterns = [
-    r'규정', r'법률', r'컴플라이언스', r'compliance', r'regulation',
-    r'audit', r'감사', r'보안', r'security', r'gdpr', r'iso',
-    r'정책', r'policy', r'legal', r'법적', r'인증', r'certif'
-]
-
-# Comparative patterns
-comparative_patterns = [
-    r'비교', r'compare', r'vs\b', r'versus', r'차이',
-    r'어떤.*좋', r'어떤.*선택', r'which\s+is\s+better',
-    r'alternative', r'대안', r'장단점', r'pros\s+and\s+cons',
-    r'trade[\s-]*off', r'선택.*기준'
-]
-
-# Default (practical solution) patterns
-practical_patterns = [
-    r'구현', r'적용', r'방법', r'도구', r'솔루션',
-    r'추천', r'선택',
-    r'how\s+to', r'best\s+practice', r'implement',
-    r'production', r'deploy', r'setup', r'configure'
-]
-
-def match_count(patterns, text):
-    return sum(1 for p in patterns if re.search(p, text))
-
-poc_score = match_count(poc_patterns, query)
-explore_score = match_count(explore_patterns, query)
-compliance_score = match_count(compliance_patterns, query)
-comparative_score = match_count(comparative_patterns, query)
-practical_score = match_count(practical_patterns, query)
-
-all_scores = {
-    "default": practical_score,
-    "poc": poc_score,
-    "exploration": explore_score,
-    "compliance": compliance_score,
-    "comparative": comparative_score
+# Profile pattern dict — compiled once per invocation
+PROFILE_PATTERNS = {
+    "poc": [
+        r'가능한가', r'될까', r'poc', r'테스트', r'검증',
+        r'feasib', r'can\s+we', r'possible', r'prototype',
+        r'validate', r'proof\s+of\s+concept', r'시도',
+    ],
+    "exploration": [
+        r'최신\s*연구', r'논문', r'트렌드', r'탐색', r'이론',
+        r'survey', r'state[\s-]*of[\s-]*the[\s-]*art', r'sota',
+        r'research\s+trend', r'emerging', r'frontier', r'방향',
+    ],
+    "compliance": [
+        r'규정', r'법률', r'컴플라이언스', r'compliance', r'regulation',
+        r'audit', r'감사', r'보안', r'security', r'gdpr', r'iso',
+        r'정책', r'policy', r'legal', r'법적', r'인증', r'certif',
+    ],
+    "comparative": [
+        r'비교', r'compare', r'vs\b', r'versus', r'차이',
+        r'어떤.*좋', r'어떤.*선택', r'which\s+is\s+better',
+        r'alternative', r'대안', r'장단점', r'pros\s+and\s+cons',
+        r'trade[\s-]*off', r'선택.*기준',
+    ],
+    "default": [
+        r'구현', r'적용', r'방법', r'도구', r'솔루션',
+        r'추천', r'선택',
+        r'how\s+to', r'best\s+practice', r'implement',
+        r'production', r'deploy', r'setup', r'configure',
+    ],
 }
+COMPILED = {k: [re.compile(p) for p in v] for k, v in PROFILE_PATTERNS.items()}
+
+def match_count(compiled, text):
+    return sum(1 for p in compiled if p.search(text))
+
+query = sys.argv[1].lower()
+all_scores = {k: match_count(v, query) for k, v in COMPILED.items()}
 max_score = max(all_scores.values())
 
-if compliance_score == max_score and compliance_score > 0:
-    profile = "compliance"
-elif comparative_score == max_score and comparative_score > 0:
-    profile = "comparative"
-elif poc_score == max_score and poc_score > 0:
-    profile = "poc"
-elif explore_score == max_score and explore_score > 0:
-    profile = "exploration"
-else:
-    profile = "default"
+# Priority order: compliance > comparative > poc > exploration > default
+priority = ["compliance", "comparative", "poc", "exploration", "default"]
+profile = "default"
+for p in priority:
+    if all_scores[p] == max_score and all_scores[p] > 0:
+        profile = p
+        break
 
 print(json.dumps({
     "profile": profile,
@@ -167,62 +146,65 @@ cmd_all() {
     python3 - "$query" "$depth" << 'PYEOF'
 import json, sys, re
 
+# Profile patterns — same 5 buckets as cmd_profile, compiled once
+PROFILE_PATTERNS = {
+    "compliance": [r'규정', r'법률', r'컴플라이언스', r'compliance', r'regulation', r'gdpr', r'iso\s*\d', r'audit', r'감사', r'정책', r'policy'],
+    "comparative": [r'비교', r'compare', r'vs\b', r'versus', r'차이', r'difference', r'대안', r'alternative'],
+    "poc": [r'가능한가', r'될까', r'poc', r'테스트', r'검증', r'feasib', r'prototype'],
+    "exploration": [r'최신\s*연구', r'논문', r'트렌드', r'탐색', r'이론', r'survey', r'sota', r'research\s+trend'],
+    "default": [r'구현', r'적용', r'방법', r'도구', r'솔루션', r'어떤.*좋', r'how\s+to', r'implement', r'production'],
+}
+COMPILED = {k: [re.compile(p) for p in v] for k, v in PROFILE_PATTERNS.items()}
+
+# Complexity / recency aux patterns — also compiled once
+RE_CMP = re.compile(r'(vs|versus|비교|compare)')
+RE_MULTI = re.compile(r'(and|와|과|및|\+|,)')
+RE_DEEP = re.compile(r'(심층|종합|comprehensive|thorough|deep)')
+RE_RECENT = re.compile(r'(최신|latest|recent|2026)')
+RE_HISTORY = re.compile(r'(역사|history|evolution)')
+
 query, depth = sys.argv[1], sys.argv[2]
 ql = query.lower()
 
-# --- Profile (5종: compliance/comparative/poc/exploration/default) ---
-# cmd_profile과 동일한 분류 기준 사용 — 5종 모두 지원
-compliance_pats = [r'규정', r'법률', r'컴플라이언스', r'compliance', r'regulation', r'gdpr', r'iso\s*\d', r'audit', r'감사', r'정책', r'policy']
-comparative_pats = [r'비교', r'compare', r'vs\b', r'versus', r'차이', r'difference', r'대안', r'alternative']
-poc_pats = [r'가능한가', r'될까', r'poc', r'테스트', r'검증', r'feasib', r'prototype']
-exp_pats = [r'최신\s*연구', r'논문', r'트렌드', r'탐색', r'이론', r'survey', r'sota', r'research\s+trend']
-pra_pats = [r'구현', r'적용', r'방법', r'도구', r'솔루션', r'어떤.*좋', r'how\s+to', r'implement', r'production']
+# --- Profile ---
+def mc(compiled, t):
+    return sum(1 for p in compiled if p.search(t))
 
-def mc(pats, t):
-    return sum(1 for p in pats if re.search(p, t))
-
-cs = mc(compliance_pats, ql)
-cmps = mc(comparative_pats, ql)
-ps, es, ds = mc(poc_pats, ql), mc(exp_pats, ql), mc(pra_pats, ql)
-
-# Priority: compliance/comparative 우선 (규제·비교 분석은 default로 떨어지면 안 됨)
-scores = {"compliance": cs, "comparative": cmps, "poc": ps, "exploration": es, "default": ds}
+scores = {k: mc(v, ql) for k, v in COMPILED.items()}
 max_score = max(scores.values())
-if cs == max_score and cs > 0:
-    profile = "compliance"
-elif cmps == max_score and cmps > 0:
-    profile = "comparative"
-elif ps == max_score and ps > 0:
-    profile = "poc"
-elif es == max_score and es > 0:
-    profile = "exploration"
-else:
-    profile = "default"
+priority = ["compliance", "comparative", "poc", "exploration", "default"]
+profile = "default"
+for p in priority:
+    if scores[p] == max_score and scores[p] > 0:
+        profile = p
+        break
 
 # --- Complexity ---
 wc = len(query.split())
-has_cmp = bool(re.search(r'(vs|versus|비교|compare)', ql))
-has_multi = len(re.findall(r'(and|와|과|및|\+|,)', ql)) >= 2
-has_deep = bool(re.search(r'(심층|종합|comprehensive|thorough|deep)', ql))
+has_cmp = bool(RE_CMP.search(ql))
+has_multi = len(RE_MULTI.findall(ql)) >= 2
+has_deep = bool(RE_DEEP.search(ql))
 if wc > 20 or (has_cmp and has_multi) or has_deep:
-    cx, wk = 3, {"min":5,"max":8}
+    cx, wk = 3, {"min": 5, "max": 8}
 elif wc > 10 or has_cmp or has_multi:
-    cx, wk = 2, {"min":3,"max":4}
+    cx, wk = 2, {"min": 3, "max": 4}
 else:
-    cx, wk = 1, {"min":1,"max":2}
+    cx, wk = 1, {"min": 1, "max": 2}
 
 # --- Recency ---
-dm = {"surface":"1y","standard":"2y","deep":"5y"}
+dm = {"surface": "1y", "standard": "2y", "deep": "5y"}
 rec = dm.get(depth, "2y")
-if re.search(r'(최신|latest|recent|2026)', ql): rec = "1y"
-elif re.search(r'(역사|history|evolution)', ql): rec = "5y"
+if RE_RECENT.search(ql):
+    rec = "1y"
+elif RE_HISTORY.search(ql):
+    rec = "5y"
 
 print(json.dumps({
     "profile": profile,
     "complexity": cx,
     "workers": wk,
     "recency": rec,
-    "depth": depth
+    "depth": depth,
 }, ensure_ascii=False))
 PYEOF
 }

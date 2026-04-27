@@ -1,6 +1,6 @@
 {
   "name": "deep-research",
-  "version": "1.0.0",
+  "version": "2.5.6",
   "description": "Adaptive deep research with Generator-Verifier loop and self-improvement. Dynamically plans research strategy per query, evaluates quality independently, and learns from every execution.",
   "author": {
     "name": "deep-research contributors"
@@ -33,7 +33,7 @@
     "default_rubric": {
       "type": "string",
       "title": "Default evaluation rubric",
-      "description": "default / academic / practical / trend (default: default)"
+      "description": "default / poc / exploration / compliance / comparative (default: default)"
     }
   }
 }

@@ -579,11 +579,7 @@ SEA 체크리스트: {sea_checklist}
 - 구조 점수: {code_metrics.structure_score} (균형: {balance})
 ```
 
-> **Prompt caching 원칙 (Anthropic 공식, 5분 TTL)**:
-> - STABLE prefix(인스트럭션 + rubric + 차원명 + 토큰 예산 규칙)가 앞 → 동일 rubric 사용 시 캐시 적중
-> - VARIABLE suffix(query/findings/per-run 메트릭)가 뒤 → 캐시 미스 영역만 새로 처리
-> - 같은 rubric으로 5분 내 반복 실행 시 토큰 비용 -50~90% 효과
-> - JSON 키 순서/공백도 캐시 키에 영향 → rubric 파일 수정 시 cache invalidation 발생
+> Prompt caching 원칙은 §"Prompt Caching 정렬 원칙"(SKILL.md:103) 참조.
 
 ### 점수 계산 분리 (코드 — AI 호출 0, 블렌딩 포함)
 

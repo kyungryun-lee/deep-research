@@ -9,7 +9,7 @@ Adaptive deep research plugin that dynamically plans strategy per query, evaluat
 - **ARISE 7-Dimension Evaluation**: Scope, Literature, Analysis, Recency, Actionability, Organization, References
 - **FAIR-RAG SEA Gating**: Structured Evidence Assessment checklist ensures information completeness
 - **Self-Improvement**: Reflexion-based episodic memory learns from every execution
-- **4 Evaluation Rubrics**: default, academic, practical, trend — each with different weight profiles
+- **5 Evaluation Rubrics**: default, poc, exploration, compliance, comparative — each with different weight profiles
 - **Independent Package**: Zero dependencies on any external project
 
 ---
@@ -81,9 +81,9 @@ Then every team member can install with:
 
 ### With Options
 ```
-/deep-research:research --depth deep --rubric academic "Transformer architecture variants 2025"
-/deep-research:research --rubric practical --output ./reports/gerrit.md "Gerrit AI automation"
-/deep-research:research --rubric trend "2026 agentic coding trends"
+/deep-research:research --depth deep --rubric exploration "Transformer architecture variants 2025"
+/deep-research:research --rubric default --output ./reports/gerrit.md "Gerrit AI automation"
+/deep-research:research --rubric comparative "React vs Vue vs Svelte for SSR in 2026"
 ```
 
 ### Parameters
@@ -92,7 +92,7 @@ Then every team member can install with:
 |-----------|--------|---------|-------------|
 | `query` | any text | (required) | Research topic or question |
 | `--depth` | `surface` / `standard` / `deep` | `standard` | Controls agent count and search breadth |
-| `--rubric` | `default` / `academic` / `practical` / `trend` | `default` | Evaluation criteria profile |
+| `--rubric` | `default` / `poc` / `exploration` / `compliance` / `comparative` | `default` | Evaluation criteria profile |
 | `--output` | file path | `./research-report-{date}.md` | Report save location |
 
 ---
@@ -125,27 +125,17 @@ After installation, you can customize the plugin behavior through Claude Code's 
 
 ## Evaluation Rubrics
 
-Each rubric adjusts dimension weights for different research goals:
+Each rubric adjusts dimension weights for different research goals. Profiles use the 8-dimension model (4 fixed core + 4-6 contextual).
 
-| Rubric | Best For | Key Weights |
-|--------|----------|-------------|
-| `default` | General research | Balanced across all 7 dimensions |
-| `academic` | Paper surveys, theory | Literature 25%, References 15% (stricter) |
-| `practical` | Implementation guides | Actionability 25%, code examples prioritized |
-| `trend` | Market/tech trends | Recency 25%, Scope 20%, diverse perspectives |
+| Rubric | Best For | Highest-Weighted Dimensions | SEA Threshold | Hard Floor (Accuracy) |
+|--------|----------|------------------------------|---------------|------------------------|
+| `default` | Production solutions | Accuracy 20%, Actionability 18%, Proven 17% | 75% | <40 → cap 50 |
+| `poc` | Proof-of-concept / feasibility | Analysis 22%, Actionability 15%, Accuracy 15% | 70% | <40 → cap 50 |
+| `exploration` | Novel territory / SOTA scan | Analysis 27%, Coverage 15%, Recency 15% | 70% | <40 → cap 50 |
+| `compliance` | Regulation / audit / legal | Accuracy 25%, Proven 20%, Citation Quality 12% | 80% | **<50 → cap 50** |
+| `comparative` | Decision support / multi-option | Accuracy 18%, Actionability 13%, Coverage 12%, Objectivity 8% | 75% | <40 → cap 50 |
 
-### Dimension Weights Comparison
-
-| Dimension | default | academic | practical | trend |
-|-----------|---------|----------|-----------|-------|
-| Scope | 15% | 10% | 10% | **20%** |
-| Literature | 20% | **25%** | 15% | 15% |
-| Analysis | 20% | 20% | 15% | 15% |
-| Recency | 15% | 15% | 15% | **25%** |
-| Actionability | 15% | 10% | **25%** | 10% |
-| Organization | 5% | 5% | 5% | 5% |
-| References | 10% | **15%** | 15% | 10% |
-| SEA Threshold | 80% | **85%** | 75% | 75% |
+Detailed weight tables live in `skills/research/rubrics/{rubric}.md`.
 
 ---
 
@@ -219,10 +209,11 @@ deep-research/
 ├── skills/research/
 │   ├── SKILL.md                 # Orchestrator (5-phase pipeline)
 │   └── rubrics/
-│       ├── default.md           # Balanced 7-dimension rubric
-│       ├── academic.md          # Paper/theory focused
-│       ├── practical.md         # Implementation focused
-│       └── trend.md             # Trends/market focused
+│       ├── default.md           # Production solutions (Proven + Actionability)
+│       ├── poc.md               # Proof-of-concept (Analysis-heavy)
+│       ├── exploration.md       # Novel territory (Analysis + Coverage)
+│       ├── compliance.md        # Regulation/audit (Accuracy + Citation, hard floor 50)
+│       └── comparative.md       # Decision support (Coverage + Depth + Objectivity)
 ├── agents/
 │   ├── research-planner.md      # Strategy planning (Opus)
 │   ├── research-worker.md       # Search/collection (Sonnet, parallel)
@@ -260,8 +251,9 @@ If using `--plugin-dir`, verify the directory structure matches the Architecture
 - Simple factual questions don't need this plugin — ask Claude directly
 
 ### Low quality scores
-- Use `--rubric academic` for paper surveys (strict but appropriate)
-- Use `--rubric practical` for implementation questions (emphasizes code examples)
+- Use `--rubric exploration` for novel/SOTA topics (analysis-heavy, lower SEA threshold)
+- Use `--rubric compliance` for regulation/audit work (strict accuracy hard floor)
+- Use `--rubric comparative` for "X vs Y vs Z" decision questions
 - Check `dr-memory list` to see if past sessions are being leveraged
 
 ---

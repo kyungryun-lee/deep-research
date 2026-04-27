@@ -40,26 +40,29 @@ cmd_detect() {
         esac
     done
 
-    local tmpfile
+    local tmpfile libdir
     tmpfile=$(mktemp)
     cat > "$tmpfile"
+    libdir="$(cd "$(dirname "$0")/lib" && pwd)"
 
-    python3 - "$tmpfile" "$threshold" << 'PYEOF'
+    python3 - "$libdir" "$tmpfile" "$threshold" << 'PYEOF'
 import json, sys, re, math
 from collections import Counter
+sys.path.insert(0, sys.argv[1])
+from dr_text import tokenize as _lib_tokenize
 
-with open(sys.argv[1]) as f:
+with open(sys.argv[2]) as f:
     data = json.loads(f.read())
-threshold = float(sys.argv[2])
+threshold = float(sys.argv[3])
 
 claims = data if isinstance(data, list) else data.get("claims", [])
 if len(claims) < 2:
     print(json.dumps({"conflicts": [], "total_claims": len(claims), "conflicts_found": 0}))
     sys.exit(0)
 
-# --- Tokenization ---
+# --- Tokenization (delegated to bin/lib/dr_text.py) ---
 def tokenize(text):
-    return re.findall(r'[a-z0-9\uac00-\ud7a3]{2,}', text.lower())
+    return _lib_tokenize(text, normalize=False, stopwords=None, min_len=2)
 
 def token_set(text):
     return set(tokenize(text))

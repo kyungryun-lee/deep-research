@@ -24,15 +24,17 @@ echo "[1] Structure"
 for agent in research-planner research-worker research-evaluator research-synthesizer; do
     [ -f "$PLUGIN_DIR/agents/$agent.md" ] && pass "agents/$agent.md exists" || fail "agents/$agent.md missing"
 done
-for rubric in default poc exploration; do
+for rubric in default poc exploration compliance comparative; do
     [ -f "$PLUGIN_DIR/skills/research/rubrics/$rubric.md" ] && pass "rubrics/$rubric.md exists" || fail "rubrics/$rubric.md missing"
 done
 [ -f "$PLUGIN_DIR/hooks/hooks.json" ] && pass "hooks.json exists" || fail "hooks.json missing"
-[ -x "$PLUGIN_DIR/bin/dr-memory" ] && pass "dr-memory is executable" || fail "dr-memory not executable"
-[ -x "$PLUGIN_DIR/bin/dr-cache" ] && pass "dr-cache is executable" || fail "dr-cache not executable"
-[ -x "$PLUGIN_DIR/bin/dr-verify" ] && pass "dr-verify is executable" || fail "dr-verify not executable"
-[ -x "$PLUGIN_DIR/bin/dr-score" ] && pass "dr-score is executable" || fail "dr-score not executable"
-[ -x "$PLUGIN_DIR/bin/dr-dedup" ] && pass "dr-dedup is executable" || fail "dr-dedup not executable"
+[ -f "$PLUGIN_DIR/bin/lib/dr_text.py" ] && pass "bin/lib/dr_text.py exists (shared text utils)" || fail "bin/lib/dr_text.py missing"
+
+# All bin/dr-* scripts must be executable (single source of truth for binary checks)
+ALL_BINS="dr-memory dr-cache dr-verify dr-score dr-dedup dr-knowledge dr-normalize dr-consistency dr-tokens dr-preprocess dr-classify dr-compress dr-cite-check dr-contradict dr-dry-run dr-bench"
+for b in $ALL_BINS; do
+    [ -x "$PLUGIN_DIR/bin/$b" ] && pass "$b is executable" || fail "$b not executable"
+done
 
 # --- 2. Configuration Tests ---
 echo ""
@@ -146,7 +148,6 @@ fi
 # --- 9. Knowledge & Consistency (Phase B) ---
 echo ""
 echo "[9] Knowledge & Consistency"
-[ -x "$PLUGIN_DIR/bin/dr-knowledge" ] && pass "dr-knowledge is executable" || fail "dr-knowledge not executable"
 
 # dr-knowledge save/load functional test
 TEST_TOPIC="__test_validate_$(date +%s)"
@@ -205,7 +206,6 @@ fi
 # --- 10. Query Normalization & Cache ---
 echo ""
 echo "[10] Query Normalization & Cache"
-[ -x "$PLUGIN_DIR/bin/dr-normalize" ] && pass "dr-normalize is executable" || fail "dr-normalize not executable"
 
 # dr-normalize basic test
 NORM_OUT=$("$PLUGIN_DIR/bin/dr-normalize" normalize "Best LLM Frameworks vs Libraries 2026" 2>/dev/null)
@@ -295,9 +295,6 @@ assert abs(d['breakdown']['structure_coherence']['score'] - 60) < 1, f'structure
 assert abs(d['breakdown']['coverage']['score'] - 85) < 1, f'coverage={d[\"breakdown\"][\"coverage\"][\"score\"]}'
 " 2>/dev/null && pass "dr-score calc blending+code-only works" || fail "dr-score calc blending failed"
 
-# dr-consistency executable
-[ -x "$PLUGIN_DIR/bin/dr-consistency" ] && pass "dr-consistency is executable" || fail "dr-consistency not executable"
-
 # Rubric calibration anchors
 for rubric in default poc exploration; do
     if grep -q "캘리브레이션 앵커" "$PLUGIN_DIR/skills/research/rubrics/$rubric.md"; then
@@ -317,9 +314,6 @@ fi
 # --- 12. Phase C: Advanced Optimization ---
 echo ""
 echo "[12] Phase C: Advanced Optimization"
-
-# dr-tokens executable
-[ -x "$PLUGIN_DIR/bin/dr-tokens" ] && pass "dr-tokens is executable" || fail "dr-tokens not executable"
 
 # dr-tokens record + report test
 TEST_SESSION="__test_$(date +%s)"
@@ -381,12 +375,6 @@ fi
 # --- 13. Meta-Research Improvements (P0-P2) ---
 echo ""
 echo "[13] Meta-Research Improvements"
-
-# P0-2: dr-preprocess executable
-[ -x "$PLUGIN_DIR/bin/dr-preprocess" ] && pass "dr-preprocess is executable" || fail "dr-preprocess not executable"
-
-# P1: dr-classify executable + profile test
-[ -x "$PLUGIN_DIR/bin/dr-classify" ] && pass "dr-classify is executable" || fail "dr-classify not executable"
 
 # dr-classify profile detection
 CLASSIFY_OUT=$("$PLUGIN_DIR/bin/dr-classify" profile "최신 연구 트렌드 조사" 2>/dev/null)
@@ -464,15 +452,11 @@ fi
 echo ""
 echo "[14] v2.5 Improvements (P0-P2)"
 
-# P0-1: dr-compress executable + functional test
-[ -x "$PLUGIN_DIR/bin/dr-compress" ] && pass "dr-compress is executable" || fail "dr-compress not executable"
-
+# P0-1: dr-compress functional test
 COMPRESS_OUT=$(printf '#### 발견 1: React Performance\n- **소스**: https://react.dev\n- **내용**: React 18 introduces concurrent features that improve rendering performance significantly with automatic batching.\n\n#### 발견 2: Vue Reactivity\n- **소스**: https://vuejs.org\n- **내용**: Vue 3 reactivity system uses Proxy-based tracking for better performance.\n' | "$PLUGIN_DIR/bin/dr-compress" summarize --max-words 50 2>/dev/null)
 [ -n "$COMPRESS_OUT" ] && pass "dr-compress summarize produces output" || fail "dr-compress summarize failed"
 
-# P0-2: dr-cite-check executable + functional test
-[ -x "$PLUGIN_DIR/bin/dr-cite-check" ] && pass "dr-cite-check is executable" || fail "dr-cite-check not executable"
-
+# P0-2: dr-cite-check functional test
 CITE_OUT=$(echo '{"claims":[{"id":"CL-001","text":"React uses virtual DOM for performance","evidence":[{"url":"https://react.dev","excerpt":"virtual DOM diffing algorithm"}]},{"id":"CL-002","text":"unsupported claim","evidence":[]}],"sources":[{"url":"https://react.dev","content":"React uses a virtual DOM diffing algorithm to efficiently update the real DOM"}]}' | "$PLUGIN_DIR/bin/dr-cite-check" validate 2>/dev/null)
 echo "$CITE_OUT" | python3 -c "
 import json,sys
@@ -482,12 +466,7 @@ assert d['summary']['unsupported'] >= 1, f'expected unsupported: {d}'
 assert d['summary']['total'] == 2
 " 2>/dev/null && pass "dr-cite-check validate works" || fail "dr-cite-check validate failed"
 
-# P1-3: dr-preprocess --shuffle
-[ -x "$PLUGIN_DIR/bin/dr-preprocess" ] && pass "dr-preprocess is executable" || fail "dr-preprocess not executable"
-
-# P2-2: dr-contradict executable + functional test
-[ -x "$PLUGIN_DIR/bin/dr-contradict" ] && pass "dr-contradict is executable" || fail "dr-contradict not executable"
-
+# P2-2: dr-contradict functional test
 CONTRA_OUT=$(echo '[{"id":"CL-A","text":"React is faster than Vue in benchmarks","source":"url1"},{"id":"CL-B","text":"Vue outperforms React and is not slower","source":"url2"}]' | "$PLUGIN_DIR/bin/dr-contradict" detect 2>/dev/null)
 echo "$CONTRA_OUT" | python3 -c "
 import json,sys
@@ -673,9 +652,6 @@ with open('$PLUGIN_DIR/skills/research/rubrics/default.md') as f:
 echo ""
 echo "[16] Benchmark + Env_Fit"
 
-# dr-bench executable
-[ -x "$PLUGIN_DIR/bin/dr-bench" ] && pass "dr-bench is executable" || fail "dr-bench not executable"
-
 # SKILL.md has context: fork
 if grep -q "^context: fork" "$PLUGIN_DIR/skills/research/SKILL.md"; then
     pass "SKILL.md has context: fork (isolated execution)"
@@ -700,13 +676,9 @@ python3 -c "import json; d=json.load(open('$PLUGIN_DIR/hooks/hooks.json')); asse
 CONTRA_SMALL=$(echo '[{"id":"A","text":"X is fast and efficient"},{"id":"B","text":"X is not fast and is slow"}]' | "$PLUGIN_DIR/bin/dr-contradict" detect --threshold 0.3 2>/dev/null)
 echo "$CONTRA_SMALL" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['conflicts_found'] >= 1" 2>/dev/null && pass "dr-contradict works on small corpus (IDF fix)" || fail "dr-contradict small corpus failed"
 
-# dr-dry-run executable + functional test
-[ -x "$PLUGIN_DIR/bin/dr-dry-run" ] && pass "dr-dry-run is executable" || fail "dr-dry-run not executable"
+# dr-dry-run functional test
 DRY_OUT=$("$PLUGIN_DIR/bin/dr-dry-run" "test query" --depth surface 2>/dev/null)
 echo "$DRY_OUT" | grep -q "Dry Run Complete" && pass "dr-dry-run produces output" || fail "dr-dry-run failed"
-
-# dr-bench executable
-[ -x "$PLUGIN_DIR/bin/dr-bench" ] && pass "dr-bench is executable (benchmark suite)" || fail "dr-bench not executable"
 
 # --- Summary ---
 echo ""

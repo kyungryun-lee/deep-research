@@ -51,10 +51,14 @@ cmd_compare() {
         exit 1
     fi
 
+    local libdir
+    libdir="$(cd "$(dirname "$0")/lib" && pwd)"
     python3 << PYEOF
 import json, re, math, sys
 from collections import Counter
 from urllib.parse import urlparse
+sys.path.insert(0, '''$libdir''')
+from dr_text import tokenize as _lib_tokenize, STOPWORDS_EXTENDED
 
 def read_file(path):
     with open(path, 'r', encoding='utf-8') as f:
@@ -96,19 +100,7 @@ def extract_sections(text):
 
 def tokenize(text):
     """Simple word tokenizer: lowercase, alphanum only, remove stopwords."""
-    stopwords = {'the','a','an','is','are','was','were','be','been','being',
-                 'have','has','had','do','does','did','will','would','could',
-                 'should','may','might','shall','can','need','dare','ought',
-                 'used','to','of','in','for','on','with','at','by','from',
-                 'as','into','through','during','before','after','above',
-                 'below','between','out','off','over','under','again','further',
-                 'then','once','and','but','or','nor','not','so','if','that',
-                 'this','these','those','it','its','i','we','they','them',
-                 'their','our','your','he','she','him','her','which','what',
-                 'who','whom','how','where','when','why','all','each','every',
-                 'both','few','more','most','other','some','such','no','only'}
-    words = re.findall(r'[a-z0-9가-힣]+', text.lower())
-    return [w for w in words if w not in stopwords and len(w) > 1]
+    return _lib_tokenize(text, normalize=False, stopwords=STOPWORDS_EXTENDED, min_len=2)
 
 def tfidf_cosine(text_a, text_b):
     """TF-IDF cosine similarity using Python stdlib only."""

@@ -185,35 +185,18 @@ cmd_semantic_match() {
 
     mkdir -p "$QUERY_DIR" 2>/dev/null
 
-    python3 - "$QUERY_DIR" "$query" "$threshold" << 'PYEOF'
-import json, sys, os, re, math, unicodedata
-from collections import Counter
+    local libdir
+    libdir="$(cd "$(dirname "$0")/lib" && pwd)"
+    python3 - "$libdir" "$QUERY_DIR" "$query" "$threshold" << 'PYEOF'
+import json, sys, os
 from datetime import datetime, timedelta
+sys.path.insert(0, sys.argv[1])
+from dr_text import tokenize as _lib_tokenize, cosine, STOPWORDS_EN
 
-qdir, query, threshold = sys.argv[1], sys.argv[2], float(sys.argv[3])
-
-STOPWORDS = {
-    'the','a','an','is','are','was','were','be','been','being',
-    'have','has','had','do','does','did','will','would','could',
-    'should','may','might','can','to','of','in','for','on','with',
-    'at','by','from','as','and','but','or','not','so','if','that',
-    'this','it','its','what','which','who','how','about','into',
-}
+qdir, query, threshold = sys.argv[2], sys.argv[3], float(sys.argv[4])
 
 def tokenize(text):
-    # NFC normalize → handle composed/decomposed Korean (must match dr-normalize/dr-cite-check)
-    tokens = re.findall(r'[a-z0-9가-힣]+', unicodedata.normalize('NFC', text).lower())
-    return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
-
-def cosine(a, b):
-    if not a or not b:
-        return 0.0
-    ca, cb = Counter(a), Counter(b)
-    vocab = set(ca) | set(cb)
-    dot = sum(ca.get(w,0) * cb.get(w,0) for w in vocab)
-    ma = math.sqrt(sum(v**2 for v in ca.values()))
-    mb = math.sqrt(sum(v**2 for v in cb.values()))
-    return dot / (ma * mb) if ma and mb else 0.0
+    return _lib_tokenize(text, normalize=True, stopwords=STOPWORDS_EN, min_len=2)
 
 query_tokens = tokenize(query)
 matches = []

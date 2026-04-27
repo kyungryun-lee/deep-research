@@ -248,28 +248,18 @@ cmd_match() {
     done
     [[ -z "$query" ]] && { echo '{"error":"--query required"}'; return 1; }
 
-    python3 - "$KNOWLEDGE_DIR" "$query" << 'PYEOF'
-import json, sys, os, re, math
+    local libdir
+    libdir="$(cd "$(dirname "$0")/lib" && pwd)"
+    python3 - "$libdir" "$KNOWLEDGE_DIR" "$query" << 'PYEOF'
+import json, sys, os
 from collections import Counter
+sys.path.insert(0, sys.argv[1])
+from dr_text import tokenize as _lib_tokenize, cosine as tf_idf_similarity
 
-knowledge_dir, query = sys.argv[1], sys.argv[2]
+knowledge_dir, query = sys.argv[2], sys.argv[3]
 
 def tokenize(text):
-    return re.findall(r'[a-z0-9가-힣]+', text.lower())
-
-def tf_idf_similarity(tokens_a, tokens_b):
-    """Simple TF-based cosine similarity (no IDF needed for small collections)"""
-    if not tokens_a or not tokens_b:
-        return 0.0
-    counter_a = Counter(tokens_a)
-    counter_b = Counter(tokens_b)
-    all_terms = set(counter_a) | set(counter_b)
-    dot = sum(counter_a.get(t, 0) * counter_b.get(t, 0) for t in all_terms)
-    mag_a = math.sqrt(sum(v**2 for v in counter_a.values()))
-    mag_b = math.sqrt(sum(v**2 for v in counter_b.values()))
-    if mag_a == 0 or mag_b == 0:
-        return 0.0
-    return dot / (mag_a * mag_b)
+    return _lib_tokenize(text, normalize=False, stopwords=None, min_len=1)
 
 query_tokens = tokenize(query)
 matches = []
@@ -573,26 +563,20 @@ cmd_evolve() {
     done
     [[ -z "$topic" ]] && { echo '{"error":"--topic required"}'; return 1; }
 
-    python3 - "$KNOWLEDGE_DIR" "$topic" << 'PYEOF'
-import json, sys, os, re, math
+    local libdir
+    libdir="$(cd "$(dirname "$0")/lib" && pwd)"
+    python3 - "$libdir" "$KNOWLEDGE_DIR" "$topic" << 'PYEOF'
+import json, sys, os
 from collections import Counter
 from datetime import datetime
+sys.path.insert(0, sys.argv[1])
+from dr_text import tokenize as _lib_tokenize, cosine
 
-knowledge_dir, topic = sys.argv[1], sys.argv[2]
+knowledge_dir, topic = sys.argv[2], sys.argv[3]
 now = datetime.now().strftime("%Y-%m-%d")
 
 def tokenize(text):
-    return re.findall(r'[a-z0-9\uac00-\ud7a3]+', text.lower())
-
-def cosine(a, b):
-    if not a or not b:
-        return 0.0
-    ca, cb = Counter(a), Counter(b)
-    vocab = set(ca) | set(cb)
-    dot = sum(ca.get(w,0) * cb.get(w,0) for w in vocab)
-    ma = math.sqrt(sum(v**2 for v in ca.values()))
-    mb = math.sqrt(sum(v**2 for v in cb.values()))
-    return dot / (ma * mb) if ma and mb else 0.0
+    return _lib_tokenize(text, normalize=False, stopwords=None, min_len=1)
 
 if not os.path.exists(knowledge_dir):
     print(json.dumps({"evolved": 0, "message": "no knowledge base"}))

@@ -35,15 +35,18 @@ EOF
 }
 
 cmd_validate() {
-    local tmpfile
+    local tmpfile libdir
     tmpfile=$(mktemp)
     cat > "$tmpfile"
+    libdir="$(cd "$(dirname "$0")/lib" && pwd)"
 
-    python3 - "$tmpfile" << 'PYEOF'
-import json, sys, re, os, hashlib, unicodedata
+    python3 - "$libdir" "$tmpfile" << 'PYEOF'
+import json, sys, re, os, hashlib
 from collections import Counter
+sys.path.insert(0, sys.argv[1])
+from dr_text import tokenize as _lib_tokenize
 
-with open(sys.argv[1]) as f:
+with open(sys.argv[2]) as f:
     data = json.loads(f.read())
 
 claims = data.get("claims", [])
@@ -85,7 +88,7 @@ if os.path.isdir(CACHE_DIR):
 
 def tokenize(text):
     """Extract meaningful tokens from text (NFC-normalized for Korean consistency)"""
-    return set(re.findall(r'[a-z0-9\uac00-\ud7a3]{2,}', unicodedata.normalize('NFC', text).lower()))
+    return _lib_tokenize(text, normalize=True, stopwords=None, min_len=2, as_set=True)
 
 def keyword_overlap(claim_text, source_text):
     """Calculate keyword overlap between claim and source"""

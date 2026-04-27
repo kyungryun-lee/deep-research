@@ -23,22 +23,19 @@ Output format (normalize):
 EOF
 }
 
-# Shared Python normalize logic — single source of truth
+# Shared Python normalize logic — delegates tokenize/cosine/STOPWORDS to bin/lib/dr_text.py
 _run_normalize_py() {
-    python3 - "$@" << 'PYEOF'
-import json, re, hashlib, math, sys, unicodedata
-from collections import Counter
-
-# Korean Unicode tokenizer (unified across dr-normalize / dr-cache / dr-cite-check)
-# - NFC normalization first to handle composed (precomposed syllable 한) vs
-#   decomposed (jamo ㅎ+ㅏ+ㄴ) input from different IMEs
-# - Pattern: ASCII alphanumeric + Hangul Syllables block (U+AC00..U+D7A3)
-# - No hyphen handling — cache key consistency over compound-word preservation
-KOREAN_TOKEN_PATTERN = r'[a-z0-9가-힣]+'
-
-def kor_tokenize(text):
-    """Unified tokenizer: NFC normalize + lowercase + extract alphanumeric+Hangul tokens"""
-    return re.findall(KOREAN_TOKEN_PATTERN, unicodedata.normalize('NFC', text).lower())
+    local libdir
+    libdir="$(cd "$(dirname "$0")/lib" && pwd)"
+    python3 - "$libdir" "$@" << 'PYEOF'
+import json, re, hashlib, sys, unicodedata
+sys.path.insert(0, sys.argv[1])
+from dr_text import (
+    tokenize as _lib_tokenize,
+    cosine,
+    KOREAN_TOKEN_PATTERN,
+    STOPWORDS_EN as STOPWORDS,
+)
 
 SYNONYMS = {
     "vs": "versus", "vs.": "versus",
@@ -57,18 +54,6 @@ SYNONYMS = {
     "howto": "guide", "how-to": "guide",
     "latest": "recent", "newest": "recent", "current": "recent",
     "using": "use", "utilized": "use", "utilize": "use",
-}
-
-STOPWORDS = {
-    'the','a','an','is','are','was','were','be','been','being',
-    'have','has','had','do','does','did','will','would','could',
-    'should','may','might','can','need','to','of','in','for',
-    'on','with','at','by','from','as','and','but','or','not',
-    'so','if','that','this','it','its','i','we','they','what',
-    'which','who','how','where','when','why','all','each','both',
-    'some','most','other','about','into','through','during',
-    'before','after','between','up','down','out','off','over',
-    'very','just','also','more','only','than','then','too',
 }
 
 def normalize_query(query):
@@ -101,33 +86,22 @@ def normalize_query(query):
     }
 
 def tokenize(text):
-    tokens = re.findall(KOREAN_TOKEN_PATTERN, unicodedata.normalize('NFC', text).lower())
-    return [t for t in tokens if t not in STOPWORDS and len(t) > 1]
+    return _lib_tokenize(text, normalize=True, stopwords=STOPWORDS, min_len=2)
 
-def cosine(a, b):
-    if not a or not b:
-        return 0.0
-    ca, cb = Counter(a), Counter(b)
-    vocab = set(ca) | set(cb)
-    dot = sum(ca.get(w,0) * cb.get(w,0) for w in vocab)
-    ma = math.sqrt(sum(v**2 for v in ca.values()))
-    mb = math.sqrt(sum(v**2 for v in cb.values()))
-    return dot / (ma * mb) if ma and mb else 0.0
-
-# --- Command dispatch ---
-mode = sys.argv[1]
+# --- Command dispatch (sys.argv[1] is libdir, [2] is mode, rest follows) ---
+mode = sys.argv[2]
 
 if mode == "normalize":
-    query = sys.argv[2]
+    query = sys.argv[3]
     print(json.dumps(normalize_query(query), ensure_ascii=False))
 
 elif mode == "cache-key":
-    query = sys.argv[2]
+    query = sys.argv[3]
     print(normalize_query(query)["cache_key"])
 
 elif mode == "similar":
-    q1, q2 = sys.argv[2], sys.argv[3]
-    threshold = float(sys.argv[4]) if len(sys.argv) > 4 else 0.6
+    q1, q2 = sys.argv[3], sys.argv[4]
+    threshold = float(sys.argv[5]) if len(sys.argv) > 5 else 0.6
     t1, t2 = tokenize(q1), tokenize(q2)
     sim = round(cosine(t1, t2), 3)
     print(json.dumps({
@@ -139,7 +113,7 @@ elif mode == "similar":
     }))
 
 elif mode == "batch":
-    with open(sys.argv[2]) as f:
+    with open(sys.argv[3]) as f:
         queries = json.loads(f.read())
     results = [normalize_query(q) for q in queries]
     groups = {}

@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "deep-research",
-      "source": ".",
+      "source": "./",
       "description": "Adaptive deep research with Generator-Verifier loop. Dynamically plans per query, evaluates independently, learns from every run.",
       "version": "2.5.6",
       "category": "research"

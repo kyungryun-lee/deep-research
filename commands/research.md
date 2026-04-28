@@ -1,35 +1,7 @@
 ---
-name: research
-description: >
-  적응형 딥 리서치 + 자동 개선 파이프라인. 리서치 → 설계(성능 검토) → 적용 →
-  자동 테스트 → 자동 수정 → 사용자 확인 → Git 배포까지 전체 자동화.
-  "리서치해줘", "조사해줘", "찾아줘", "research", "개선해줘" 등 요청 시 자동 호출.
-when_to_use: >
-  Use when the user asks to research, investigate, survey, or explore a topic.
-  Also use when asked to improve, optimize, or enhance the plugin itself.
-  Triggered by: "리서치", "조사", "찾아줘", "알아봐", "research", "investigate",
-  "survey", "개선", "최적화", "optimize", "improve".
-  Do NOT use for: simple factual questions, code writing, file editing.
-model: opus
-effort: high
-context: fork
+description: 적응형 딥 리서치 (Generator-Verifier loop, 자동 개선). 리서치 → 설계 → 적용 → 테스트 → 배포 파이프라인.
+argument-hint: '"리서치 주제" [--depth surface|standard|deep] [--rubric default|poc|exploration|compliance|comparative] [--mode research-only|full-pipeline] [--output 경로] [--dry-run]'
 allowed-tools: Agent, Read, Write, Glob, Grep, Bash, WebSearch, WebFetch
-arguments:
-  - name: query
-    description: 리서치 주제/질문
-  - name: depth
-    description: "surface / standard / deep (기본: standard)"
-    required: false
-  - name: rubric
-    description: "평가 기준 (default/poc/exploration)"
-    required: false
-  - name: output
-    description: "보고서 저장 경로"
-    required: false
-  - name: mode
-    description: "research-only / full-pipeline (기본: research-only)"
-    required: false
-argument-hint: '"리서치 주제" [--depth deep] [--rubric poc] [--mode full-pipeline] [--dry-run]'
 ---
 
 # Deep Research Orchestrator v2
